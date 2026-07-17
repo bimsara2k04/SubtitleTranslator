@@ -48,17 +48,25 @@ export async function processChunk(
           delayMs: 2000,
           backoffFactor: 2,
           shouldRetry: (err) => {
-            // Retry on rate limits (429), transient connection issues, or server errors (5xx)
-            const msg = String(err?.message || err || '').toLowerCase();
+            const msg = String(err?.message || err || '');
+            const lower = msg.toLowerCase();
+
+            // Daily free-tier quota is exhausted — retrying is futile, fail immediately.
+            // This quota resets at midnight PT, not per-minute.
+            if (msg.includes('PerDayPerProjectPerModel-FreeTier') || msg.includes('GenerateRequestsPerDay')) {
+              return false;
+            }
+
+            // Retry on per-minute rate limits (429), transient errors, or server errors (5xx)
             return (
-              msg.includes('429') ||
-              msg.includes('rate limit') ||
-              msg.includes('resource_exhausted') ||
-              msg.includes('quota') ||
-              msg.includes('500') ||
-              msg.includes('503') ||
-              msg.includes('network') ||
-              msg.includes('timeout')
+              lower.includes('429') ||
+              lower.includes('rate limit') ||
+              lower.includes('resource_exhausted') ||
+              lower.includes('quota') ||
+              lower.includes('500') ||
+              lower.includes('503') ||
+              lower.includes('network') ||
+              lower.includes('timeout')
             );
           },
         }
@@ -111,36 +119,52 @@ export async function processChunk(
     const errorMsg = error?.message || 'Unknown chunk translation error';
     console.error(`[ProcessChunk Error] Chunk ${chunkId} failed:`, errorMsg);
 
-    // Dynamically split chunk into two smaller sub-chunks if it has more than one cue.
-    // This allows reducing size/token limits and retry smaller inputs.
+    // Check if this is daily quota exhaustion — splitting won't help since the quota
+    // is per-day. Fail the chunk (and job) immediately with a clear message.
+    const isDailyQuotaExhausted =
+      errorMsg.includes('PerDayPerProjectPerModel-FreeTier') ||
+      errorMsg.includes('GenerateRequestsPerDay');
+
+    if (isDailyQuotaExhausted) {
+      const userFacingMsg =
+        'Gemini API daily free-tier quota exhausted (20 requests/day limit). ' +
+        'Please wait until midnight PT for the quota to reset, or upgrade to a paid API key.';
+      await ChunksRepository.updateFailure(chunkId, userFacingMsg, chunk.retryCount + 1);
+      await JobsRepository.incrementProcessed(job.id, true);
+      // Propagate so the background runner marks the whole job failed immediately
+      throw new Error(userFacingMsg);
+    }
+
+    // For non-quota persistent failures: dynamically split into two smaller sub-chunks.
+    // This reduces payload size and allows the smaller pieces to be retried.
     if (chunk.cuesToTranslate.length > 1) {
       const mid = Math.floor(chunk.cuesToTranslate.length / 2);
       const cuesA = chunk.cuesToTranslate.slice(0, mid);
       const cuesB = chunk.cuesToTranslate.slice(mid);
 
       console.warn(
-        `[ProcessChunk Split] Chunk ${chunkId} (index ${chunk.chunkIndex}, cues count ${chunk.cuesToTranslate.length}) failed persistently. Splitting into index ${chunk.chunkIndex} (size ${cuesA.length}) and index ${chunk.chunkIndex + 1} (size ${cuesB.length}).`
+        `[ProcessChunk Split] Chunk ${chunkId} (index ${chunk.chunkIndex}, ${chunk.cuesToTranslate.length} cues) splitting into ` +
+        `index ${chunk.chunkIndex} (${cuesA.length} cues) and index ${chunk.chunkIndex + 1} (${cuesB.length} cues).`
       );
 
       try {
         await ChunksRepository.splitChunk(chunkId, cuesA, cuesB);
-        // Throw special error indicating split happened, which allows background loop to adapt
-        throw new Error(`Chunk split due to persistent failure: ${errorMsg}`);
+        // Return early — the original chunk is deleted; the background loop will pick up the new sub-chunks.
+        // Do NOT call updateFailure/incrementProcessed here since the chunk no longer exists.
+        throw new Error(`Chunk split into smaller pieces for retry: ${errorMsg}`);
       } catch (splitErr: any) {
-        console.error(`[ProcessChunk Split Error] Failed to split chunk ${chunkId}:`, splitErr.message);
+        // If the split itself failed, fall through to the standard failure path below.
+        console.error(`[ProcessChunk Split Error] Could not split chunk ${chunkId}:`, splitErr.message);
       }
     }
 
-    // Fail update for standard unsplittable chunk
+    // Standard failure update for unsplittable chunks (size == 1 or split failed)
     const updatedChunk = await ChunksRepository.updateFailure(
       chunkId,
       errorMsg,
       chunk.retryCount + 1
     );
-
-    // Update job progress with isFailed = true
     await JobsRepository.incrementProcessed(job.id, true);
-
     return updatedChunk;
   }
 }

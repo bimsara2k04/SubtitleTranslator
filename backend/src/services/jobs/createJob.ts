@@ -18,10 +18,13 @@ export async function createJob(req: CreateJobRequest): Promise<CreateJobResult>
   const validation = validateSource(cues);
 
   // 3. Estimate chunks
+  // Chunk size of 500 cues keeps a 1,800-cue movie file within 4 API requests,
+  // well under the Gemini free-tier limit of 20 requests/day.
+  // Gemini Flash's 1M-token context window handles large chunks without issue.
   const chunkedCues = chunkCues(cues, {
-    maxCues: 80,
-    maxChars: 8000,
-    estimatedTokenBudget: 2000,
+    maxCues: 500,
+    maxChars: 60000,
+    estimatedTokenBudget: 15000,
   });
 
   // 4. Create the DB record for the job

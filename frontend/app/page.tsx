@@ -25,9 +25,10 @@ const TARGET_LANGUAGES = [
 ];
 
 const MODELS = [
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Recommended - Active Quota)', speed: 'Fastest', quality: 'High' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Best for Complex Nuance)', speed: 'Moderate', quality: 'Highest' },
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash (Experimental)', speed: 'Fastest', quality: 'High' },
+  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (Recommended)', speed: 'Fastest', quality: 'Highest' },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite (Budget)', speed: 'Fastest', quality: 'High' },
+  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', speed: 'Fast', quality: 'High' },
+  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Best Quality)', speed: 'Moderate', quality: 'Highest' },
 ];
 
 const TONES = [
@@ -41,7 +42,7 @@ export default function UploadPage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [targetLanguage, setTargetLanguage] = useState('Spanish');
-  const [model, setModel] = useState('gemini-2.5-flash');
+  const [model, setModel] = useState('gemini-3.5-flash');
   const [toneStyle, setToneStyle] = useState('natural');
   const [glossary, setGlossary] = useState('');
 

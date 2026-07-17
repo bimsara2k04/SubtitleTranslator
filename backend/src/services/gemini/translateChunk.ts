@@ -6,7 +6,7 @@ import { buildSystemInstructions, buildInputPayload } from './prompts.js';
 export async function translateChunk(
   cues: SubtitleCue[],
   targetLanguage: string,
-  model = 'gemini-2.0-flash',
+  model = 'gemini-3.5-flash',
   toneStyle = 'natural',
   glossary?: string | null
 ): Promise<TranslationItem[]> {

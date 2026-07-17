@@ -73,7 +73,14 @@ async function runBackgroundJob(jobId: string): Promise<void> {
       try {
         await processChunk(nextChunk.id);
       } catch (err: any) {
-        console.warn(`[BackgroundJob] Chunk ${nextChunk.id} failed or was split:`, err?.message || err);
+        const msg = err?.message || String(err);
+        // Daily quota exhaustion is unrecoverable for the rest of today —
+        // abort the entire job immediately instead of continuing to hammer the API.
+        if (msg.includes('daily free-tier quota exhausted') || msg.includes('PerDayPerProjectPerModel-FreeTier')) {
+          throw err;
+        }
+        // For splits or transient chunk failures, just log and continue to the next chunk
+        console.warn(`[BackgroundJob] Chunk ${nextChunk.id} failed or was split:`, msg);
       }
     }
 

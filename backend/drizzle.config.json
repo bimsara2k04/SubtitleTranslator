@@ -1,0 +1,8 @@
+{
+  "schema": "./src/db/schema.mjs",
+  "out": "./drizzle",
+  "dialect": "postgresql",
+  "dbCredentials": {
+    "url": "postgresql://postgres:silvias15@localhost:5432/subtitle_translator"
+  }
+}

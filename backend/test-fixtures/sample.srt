@@ -1,0 +1,15 @@
+1
+00:00:01,000 --> 00:00:04,500
+Hello and welcome to this video about subtitle translation.
+
+2
+00:00:04,600 --> 00:00:08,200
+In this demo, we will translate English subtitles using the Gemini API.
+
+3
+00:00:08,300 --> 00:00:11,900
+The application parses SRT formatting and keeps timing metadata safe.
+
+4
+00:00:12,000 --> 00:00:15,000
+Let's see how the structured output is generated!

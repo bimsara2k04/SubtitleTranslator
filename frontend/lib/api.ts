@@ -1,5 +1,5 @@
-import type { JobDetails } from './types.js';
-import { auth } from './firebase.js';
+import type { JobDetails } from './types';
+import { auth } from './firebase';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
@@ -26,7 +26,7 @@ export type UploadResponse = {
   jobId: string;
   status: string;
   valid: boolean;
-  validationIssues: import('./types.js').ValidationIssue[];
+  validationIssues: import('./types').ValidationIssue[];
 };
 
 export async function uploadSRT(params: UploadParams): Promise<UploadResponse> {

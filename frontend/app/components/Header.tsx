@@ -2,8 +2,8 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useAuth } from '../../lib/auth-context.js';
-import AuthModal from './AuthModal.js';
+import { useAuth } from '../../lib/auth-context';
+import AuthModal from './AuthModal';
 import { LogIn, LogOut, User as UserIcon, Sparkles } from 'lucide-react';
 
 export default function Header() {

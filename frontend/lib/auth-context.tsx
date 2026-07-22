@@ -9,7 +9,7 @@ import {
   createUserWithEmailAndPassword,
   signOut as firebaseSignOut,
 } from 'firebase/auth';
-import { auth, googleProvider } from './firebase.js';
+import { auth, googleProvider } from './firebase';
 
 interface AuthContextType {
   user: User | null;

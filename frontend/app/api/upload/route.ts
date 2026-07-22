@@ -3,8 +3,18 @@ import { createJob } from '@/lib/server/services/jobs/createJob';
 import { JobsRepository } from '@/lib/server/db/repositories/jobs';
 import { looksLikeSRT } from '@/lib/server/services/srt/parse';
 
+import { verifyRequestUser } from '@/lib/server/auth';
+
 export async function POST(req: Request) {
   try {
+    const user = await verifyRequestUser(req);
+    if (!user) {
+      return NextResponse.json(
+        { error: { code: 'UNAUTHORIZED', message: 'You must be signed in to translate subtitles.' } },
+        { status: 401 }
+      );
+    }
+
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const targetLanguage = formData.get('targetLanguage') as string | null;
@@ -40,6 +50,7 @@ export async function POST(req: Request) {
     }
 
     const result = await createJob({
+      userId: user.uid,
       filename: file.name,
       targetLanguage,
       model,

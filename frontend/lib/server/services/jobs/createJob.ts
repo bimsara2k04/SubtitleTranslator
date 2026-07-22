@@ -31,6 +31,7 @@ export async function createJob(req: CreateJobRequest): Promise<CreateJobResult>
     totalChunks: chunkedCues.length,
     processedChunks: 0,
     failedChunks: 0,
+    userId: req.userId,
     errorMessage: validation.valid ? null : 'Pre-translation validation failed.',
   });
 

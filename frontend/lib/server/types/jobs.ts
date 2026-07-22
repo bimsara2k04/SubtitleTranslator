@@ -26,6 +26,7 @@ export type TranslationJob = {
   totalChunks: number;
   processedChunks: number;
   failedChunks: number;
+  userId: string | null;
   createdAt: Date;
   updatedAt: Date;
   errorMessage: string | null;
@@ -64,6 +65,7 @@ export type ExportRecord = {
 };
 
 export type CreateJobRequest = {
+  userId: string | null;
   filename: string;
   targetLanguage: string;
   model: string;

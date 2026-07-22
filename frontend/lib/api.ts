@@ -141,3 +141,19 @@ export async function getJobEstimate(jobId: string): Promise<EstimateResponse> {
   }
   return res.json();
 }
+
+export async function getTranslationHistory(): Promise<JobDetails[]> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${BACKEND_URL}/api/jobs`, {
+    headers: {
+      ...authHeaders,
+    },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Failed to fetch translation history: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.jobs;
+}
+

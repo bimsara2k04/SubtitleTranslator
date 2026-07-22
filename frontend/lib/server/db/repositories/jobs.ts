@@ -16,6 +16,7 @@ function docToJob(id: string, data: FirebaseFirestore.DocumentData): Translation
     totalChunks: data['totalChunks'],
     processedChunks: data['processedChunks'],
     failedChunks: data['failedChunks'],
+    userId: data['userId'] ?? null,
     createdAt: data['createdAt']?.toDate() ?? new Date(),
     updatedAt: data['updatedAt']?.toDate() ?? new Date(),
     errorMessage: data['errorMessage'] ?? null,
@@ -36,6 +37,7 @@ export class JobsRepository {
       totalChunks: job.totalChunks,
       processedChunks: job.processedChunks,
       failedChunks: job.failedChunks,
+      userId: job.userId ?? null,
       errorMessage: job.errorMessage ?? null,
       createdAt: now,
       updatedAt: now,
@@ -43,6 +45,15 @@ export class JobsRepository {
 
     const snap = await docRef.get();
     return docToJob(docRef.id, snap.data()!);
+  }
+
+  static async findByUserId(userId: string): Promise<TranslationJob[]> {
+    const snap = await db
+      .collection('jobs')
+      .where('userId', '==', userId)
+      .orderBy('createdAt', 'desc')
+      .get();
+    return snap.docs.map((doc) => docToJob(doc.id, doc.data()));
   }
 
   static async findById(id: string): Promise<TranslationJob | null> {

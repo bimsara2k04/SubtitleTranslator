@@ -1,7 +1,7 @@
 import type { JobDetails } from './types';
 import { auth } from './firebase';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || '';
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const user = auth.currentUser;

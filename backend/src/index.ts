@@ -31,7 +31,12 @@ app.use('/api', apiRouter);
 // Global Error Handler (must be registered last)
 app.use(errorHandler);
 
-app.listen(port, () => {
-  console.log(`[Server] Subtitle Translator Backend listening on http://localhost:${port}`);
-});
+// Only start the HTTP server when running locally (not on Vercel serverless)
+if (process.env.VERCEL !== '1') {
+  app.listen(port, () => {
+    console.log(`[Server] Subtitle Translator Backend listening on http://localhost:${port}`);
+  });
+}
+
 export default app;
+

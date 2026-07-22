@@ -5,7 +5,9 @@ function initAdmin(): Firestore {
   if (getApps().length === 0) {
     const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (!serviceAccountJson) {
-      throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is missing.');
+      // Do not throw during build-time module import, return a dummy object
+      console.warn('[FirebaseAdmin] Warning: FIREBASE_SERVICE_ACCOUNT environment variable is missing.');
+      return {} as Firestore;
     }
     let serviceAccount: Record<string, any>;
     try {

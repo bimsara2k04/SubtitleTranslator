@@ -73,7 +73,13 @@ export async function POST(req: Request) {
   } catch (error: any) {
     console.error('[API Upload Error]', error);
     return NextResponse.json(
-      { error: { code: 'UPLOAD_FAILED', message: error?.message || 'Failed to upload subtitle file.' } },
+      { 
+        error: { 
+          code: 'UPLOAD_FAILED', 
+          message: error?.message || 'Failed to upload subtitle file.',
+          stack: error?.stack || String(error)
+        } 
+      },
       { status: 500 }
     );
   }

@@ -51,7 +51,11 @@ export async function uploadSRT(params: UploadParams): Promise<UploadResponse> {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Upload failed with status ${res.status}`);
+    let msg = err.error?.message || `Upload failed with status ${res.status}`;
+    if (err.error?.stack) {
+      msg += `\nStack trace: ${err.error.stack}`;
+    }
+    throw new Error(msg);
   }
 
   return res.json();

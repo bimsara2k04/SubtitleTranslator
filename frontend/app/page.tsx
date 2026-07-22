@@ -42,7 +42,7 @@ const TONES = [
 export default function UploadPage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
-  const [targetLanguage, setTargetLanguage] = useState('Spanish');
+  const [targetLanguage, setTargetLanguage] = useState('Sinhala');
   const [model, setModel] = useState('gemini-3.5-flash');
   const [toneStyle, setToneStyle] = useState('natural');
   const [glossary, setGlossary] = useState('');

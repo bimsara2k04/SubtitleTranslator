@@ -1,6 +1,6 @@
 import { getAuth } from 'firebase-admin/auth';
 import { getApps } from 'firebase-admin/app';
-import { adminDb } from './firebaseAdmin'; // ensures firebase-admin app is initialized
+import { initAdmin } from './firebaseAdmin';
 
 export interface AuthenticatedUser {
   uid: string;
@@ -8,7 +8,14 @@ export interface AuthenticatedUser {
 }
 
 export async function verifyRequestUser(req: Request): Promise<AuthenticatedUser | null> {
-  // Safe-check: if Firebase admin is not fully initialized, skip authentication
+  // Ensure Firebase Admin is initialized
+  try {
+    initAdmin();
+  } catch (err) {
+    console.error('[Auth Service] Failed to initialize admin app:', err);
+    return null;
+  }
+
   if (getApps().length === 0) {
     return null;
   }

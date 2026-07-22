@@ -12,10 +12,14 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
 };
 
-// Initialize Firebase client app (singleton check to prevent re-initialization in Next.js fast refresh)
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+// Safely initialize Firebase client app only when API key is provided (prevents SSG/build errors on Vercel)
+const app = getApps().length > 0
+  ? getApp()
+  : firebaseConfig.apiKey
+    ? initializeApp(firebaseConfig)
+    : ({} as ReturnType<typeof initializeApp>);
 
-export const auth = getAuth(app);
+export const auth = firebaseConfig.apiKey ? getAuth(app) : ({} as ReturnType<typeof getAuth>);
 export const googleProvider = new GoogleAuthProvider();
 
 // Initialize Analytics safely on client side only

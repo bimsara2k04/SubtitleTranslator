@@ -76,3 +76,33 @@ export async function retryChunk(jobId: string, chunkId: string): Promise<void> 
 export function getExportUrl(jobId: string): string {
   return `${BACKEND_URL}/api/jobs/${jobId}/export`;
 }
+
+export type EstimateResponse = {
+  estimatedCalls: number;
+  estimatedTotalTokens: number;
+  estimatedChunks: number;
+  totalCues: number;
+  projects: Array<{
+    label: string;
+    dailyCallsUsed: number;
+    dailyCallsLimit: number;
+    dailyCallsRemaining: number;
+    canCompleteJobAlone: boolean;
+    onCooldown: boolean;
+    cooldownExpiresAt: string | null;
+  }>;
+  combinedCallsRemaining: number;
+  canCompleteWithoutFailover: boolean;
+  canCompleteWithFailover: boolean;
+  throttleWarning: string | null;
+  isEstimate: boolean;
+};
+
+export async function getJobEstimate(jobId: string): Promise<EstimateResponse> {
+  const res = await fetch(`${BACKEND_URL}/api/jobs/${jobId}/estimate`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Failed to fetch job estimates: ${res.status}`);
+  }
+  return res.json();
+}

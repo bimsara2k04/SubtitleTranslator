@@ -1,32 +1,44 @@
-import { eq } from 'drizzle-orm';
-import { db } from '../client.js';
-import { exports } from '../schema.js';
+import { FieldValue } from 'firebase-admin/firestore';
+import { db } from '../firebase.js';
 import type { ExportRecord } from '../../types/jobs.js';
+
+function docToExport(id: string, data: FirebaseFirestore.DocumentData): ExportRecord {
+  return {
+    id,
+    jobId: data['jobId'],
+    filename: data['filename'],
+    content: data['content'],
+    createdAt: data['createdAt']?.toDate() ?? new Date(),
+  };
+}
 
 export class ExportsRepository {
   static async create(exportRecord: Omit<ExportRecord, 'id' | 'createdAt'>): Promise<ExportRecord> {
-    const [inserted] = await db
-      .insert(exports)
-      .values({
+    const docRef = await db
+      .collection('jobs')
+      .doc(exportRecord.jobId)
+      .collection('exports')
+      .add({
         jobId: exportRecord.jobId,
         filename: exportRecord.filename,
         content: exportRecord.content,
-      })
-      .returning();
+        createdAt: FieldValue.serverTimestamp(),
+      });
 
-    if (!inserted) {
-      throw new Error('Failed to create export record');
-    }
-
-    return inserted;
+    const snap = await docRef.get();
+    return docToExport(docRef.id, snap.data()!);
   }
 
   static async findByJobId(jobId: string): Promise<ExportRecord | null> {
-    const [record] = await db
-      .select()
-      .from(exports)
-      .where(eq(exports.jobId, jobId));
+    const snap = await db
+      .collection('jobs')
+      .doc(jobId)
+      .collection('exports')
+      .limit(1)
+      .get();
 
-    return record || null;
+    if (snap.empty) return null;
+    const doc = snap.docs[0]!;
+    return docToExport(doc.id, doc.data());
   }
 }

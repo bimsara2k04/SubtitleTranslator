@@ -1,42 +1,55 @@
-import { eq } from 'drizzle-orm';
-import { db } from '../client.js';
-import { translationJobs, validationReports } from '../schema.js';
+import { FieldValue } from 'firebase-admin/firestore';
+import { db } from '../firebase.js';
 import type { TranslationJob, JobStatus } from '../../types/jobs.js';
 import type { ValidationIssue } from '../../types/subtitles.js';
 
+// Helper: convert a Firestore document snapshot to a TranslationJob
+function docToJob(id: string, data: FirebaseFirestore.DocumentData): TranslationJob {
+  return {
+    id,
+    status: data['status'],
+    sourceFilename: data['sourceFilename'],
+    targetLanguage: data['targetLanguage'],
+    model: data['model'],
+    toneStyle: data['toneStyle'],
+    glossary: data['glossary'] ?? null,
+    totalCues: data['totalCues'],
+    totalChunks: data['totalChunks'],
+    processedChunks: data['processedChunks'],
+    failedChunks: data['failedChunks'],
+    createdAt: data['createdAt']?.toDate() ?? new Date(),
+    updatedAt: data['updatedAt']?.toDate() ?? new Date(),
+    errorMessage: data['errorMessage'] ?? null,
+  };
+}
+
 export class JobsRepository {
   static async create(job: Omit<TranslationJob, 'id' | 'createdAt' | 'updatedAt'>): Promise<TranslationJob> {
-    const [inserted] = await db
-      .insert(translationJobs)
-      .values({
-        status: job.status,
-        sourceFilename: job.sourceFilename,
-        targetLanguage: job.targetLanguage,
-        model: job.model,
-        toneStyle: job.toneStyle,
-        glossary: job.glossary,
-        totalCues: job.totalCues,
-        totalChunks: job.totalChunks,
-        processedChunks: job.processedChunks,
-        failedChunks: job.failedChunks,
-        errorMessage: job.errorMessage,
-      })
-      .returning();
+    const now = FieldValue.serverTimestamp();
+    const docRef = await db.collection('jobs').add({
+      status: job.status,
+      sourceFilename: job.sourceFilename,
+      targetLanguage: job.targetLanguage,
+      model: job.model,
+      toneStyle: job.toneStyle,
+      glossary: job.glossary ?? null,
+      totalCues: job.totalCues,
+      totalChunks: job.totalChunks,
+      processedChunks: job.processedChunks,
+      failedChunks: job.failedChunks,
+      errorMessage: job.errorMessage ?? null,
+      createdAt: now,
+      updatedAt: now,
+    });
 
-    if (!inserted) {
-      throw new Error('Failed to create job');
-    }
-
-    return inserted;
+    const snap = await docRef.get();
+    return docToJob(docRef.id, snap.data()!);
   }
 
   static async findById(id: string): Promise<TranslationJob | null> {
-    const [job] = await db
-      .select()
-      .from(translationJobs)
-      .where(eq(translationJobs.id, id));
-
-    return job || null;
+    const snap = await db.collection('jobs').doc(id).get();
+    if (!snap.exists) return null;
+    return docToJob(snap.id, snap.data()!);
   }
 
   static async updateStatus(
@@ -44,52 +57,55 @@ export class JobsRepository {
     status: JobStatus,
     extra: Partial<Omit<TranslationJob, 'id' | 'status' | 'createdAt' | 'updatedAt'>> = {}
   ): Promise<TranslationJob> {
-    const [updated] = await db
-      .update(translationJobs)
-      .set({
-        status,
-        updatedAt: new Date(),
-        ...extra,
-      })
-      .where(eq(translationJobs.id, id))
-      .returning();
+    const ref = db.collection('jobs').doc(id);
+    await ref.update({
+      status,
+      updatedAt: FieldValue.serverTimestamp(),
+      ...extra,
+    });
 
-    if (!updated) {
-      throw new Error(`Failed to update status for job ${id}`);
-    }
-
-    return updated;
+    const snap = await ref.get();
+    if (!snap.exists) throw new Error(`Failed to update status for job ${id}`);
+    return docToJob(snap.id, snap.data()!);
   }
 
   static async incrementProcessed(id: string, isFailed = false): Promise<TranslationJob> {
-    const job = await this.findById(id);
-    if (!job) {
-      throw new Error(`Job ${id} not found`);
-    }
+    const ref = db.collection('jobs').doc(id);
 
-    const processedChunks = job.processedChunks + 1;
-    const failedChunks = isFailed ? job.failedChunks + 1 : job.failedChunks;
-    
-    // Check if we are finished
-    let status = job.status;
-    if (processedChunks >= job.totalChunks) {
-      status = failedChunks > 0 ? 'failed' : 'completed';
-    }
+    const updated = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new Error(`Job ${id} not found`);
 
-    const [updated] = await db
-      .update(translationJobs)
-      .set({
+      const data = snap.data()!;
+      const processedChunks: number = data['processedChunks'] + 1;
+      const failedChunks: number = isFailed ? data['failedChunks'] + 1 : data['failedChunks'];
+      const totalChunks: number = data['totalChunks'];
+
+      let status: JobStatus = data['status'];
+      if (processedChunks >= totalChunks) {
+        status = failedChunks > 0 ? 'failed' : 'completed';
+      }
+
+      tx.update(ref, {
         processedChunks,
         failedChunks,
         status,
-        updatedAt: new Date(),
-      })
-      .where(eq(translationJobs.id, id))
-      .returning();
+        updatedAt: FieldValue.serverTimestamp(),
+      });
 
-    if (!updated) {
-      throw new Error(`Failed to update progress for job ${id}`);
-    }
+      // Return the projected new data (serverTimestamp not available in tx, use now)
+      return {
+        ...data,
+        id: snap.id,
+        processedChunks,
+        failedChunks,
+        status,
+        createdAt: data['createdAt']?.toDate() ?? new Date(),
+        updatedAt: new Date(),
+        glossary: data['glossary'] ?? null,
+        errorMessage: data['errorMessage'] ?? null,
+      } as TranslationJob;
+    });
 
     return updated;
   }
@@ -100,24 +116,34 @@ export class JobsRepository {
     type: 'pre' | 'post',
     issues: ValidationIssue[]
   ) {
-    const [report] = await db
-      .insert(validationReports)
-      .values({
+    const ref = await db
+      .collection('jobs')
+      .doc(jobId)
+      .collection('validationReports')
+      .add({
         jobId,
-        chunkId,
+        chunkId: chunkId ?? null,
         type,
         issues,
-      })
-      .returning();
-    return report;
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    return { id: ref.id, jobId, chunkId, type, issues, createdAt: new Date() };
   }
 
   static async getValidationIssues(jobId: string): Promise<ValidationIssue[]> {
-    const reports = await db
-      .select()
-      .from(validationReports)
-      .where(eq(validationReports.jobId, jobId));
+    const snap = await db
+      .collection('jobs')
+      .doc(jobId)
+      .collection('validationReports')
+      .get();
 
-    return reports.flatMap((r) => r.issues);
+    const issues: ValidationIssue[] = [];
+    for (const doc of snap.docs) {
+      const data = doc.data();
+      if (Array.isArray(data['issues'])) {
+        issues.push(...(data['issues'] as ValidationIssue[]));
+      }
+    }
+    return issues;
   }
 }

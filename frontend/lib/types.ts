@@ -63,6 +63,7 @@ export type TranslationChunk = {
   errorMessage: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  usedProjectLabel?: string | null;
 };
 
 export type JobDetails = TranslationJob & {

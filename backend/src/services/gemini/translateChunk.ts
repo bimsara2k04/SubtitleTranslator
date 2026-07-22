@@ -1,5 +1,5 @@
 import type { SubtitleCue, TranslationItem } from '../../types/subtitles.js';
-import { client } from './client.js';
+import { GoogleGenAI } from '@google/genai';
 import { translationResponseSchema } from './schema.js';
 import { buildSystemInstructions, buildInputPayload } from './prompts.js';
 
@@ -8,17 +8,21 @@ export async function translateChunk(
   targetLanguage: string,
   model = 'gemini-3.5-flash',
   toneStyle = 'natural',
-  glossary?: string | null
+  glossary?: string | null,
+  apiKey?: string
 ): Promise<TranslationItem[]> {
   if (cues.length === 0) {
     return [];
   }
 
+  const activeKey = apiKey || process.env.GEMINI_API_KEY || 'dummy-key-to-prevent-constructor-crash';
+  const customClient = new GoogleGenAI({ apiKey: activeKey });
+
   const systemInstruction = buildSystemInstructions(targetLanguage, toneStyle, glossary);
   const input = buildInputPayload(cues);
 
   try {
-    const response = await client.models.generateContent({
+    const response = await customClient.models.generateContent({
       model,
       contents: input,
       config: {

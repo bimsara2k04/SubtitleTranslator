@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { handleUpload } from '../controllers/uploadController.js';
 import { handleGetJob, handleStartTranslation, handleRetryChunk } from '../controllers/jobsController.js';
+import { handleGetEstimate } from '../controllers/estimateController.js';
 import { handleExport } from '../controllers/exportController.js';
 import { uploadMiddleware } from '../middleware/upload.js';
 
@@ -11,6 +12,9 @@ router.post('/upload', uploadMiddleware.single('file'), handleUpload);
 
 // Job details and status
 router.get('/jobs/:id', handleGetJob);
+
+// Fetch job quota & cost estimates before starting translation
+router.get('/jobs/:id/estimate', handleGetEstimate);
 
 // Trigger background translation job
 router.post('/jobs/:id/translate', handleStartTranslation);

@@ -2,8 +2,8 @@ import { ChunksRepository } from '../../db/repositories/chunks.js';
 import { JobsRepository } from '../../db/repositories/jobs.js';
 import { translateChunk } from '../gemini/translateChunk.js';
 import { validateTranslations } from '../srt/validate.js';
-import { withRetry } from '../../utils/retry.js';
 import { globalRateLimiter } from '../../utils/rateLimiter.js';
+import { keyPool } from '../gemini/keyPool.js';
 import type { TranslationChunk } from '../../types/jobs.js';
 
 export async function processChunk(
@@ -26,6 +26,7 @@ export async function processChunk(
   });
 
   const model = modelOverride || job.model;
+  let activeProjectLabel = 'unknown';
 
   try {
     // Acquire a rate limiter slot before requesting translation from Gemini
@@ -33,44 +34,98 @@ export async function processChunk(
     
     let translatedItems;
     try {
-      // Translate with exponential backoff retry for transient API failures
-      translatedItems = await withRetry(
-        () =>
-          translateChunk(
+      const maxAttempts = 5;
+      let attempt = 0;
+      let lastErr: any = null;
+
+      while (attempt < maxAttempts) {
+        attempt++;
+        const keyEntry = keyPool.acquireKey();
+
+        // If the acquired key is on cooldown, check how long we have to wait
+        if (keyEntry.cooldownUntil !== null) {
+          const waitMs = keyEntry.cooldownUntil.getTime() - Date.now();
+          if (waitMs > 0) {
+            // If wait is longer than 10 minutes, we assume the entire pool is exhausted
+            // (e.g. all keys hit their daily limits) and we abort immediately
+            if (waitMs > 10 * 60 * 1000) {
+              const resetStr = keyEntry.cooldownUntil.toLocaleTimeString();
+              throw new Error(
+                `All Gemini API keys daily quota exhausted. Soonest reset is for ${keyEntry.projectLabel} at ${resetStr}.`
+              );
+            }
+            console.log(
+              `[ProcessChunk] All API keys are on cooldown. Waiting ${Math.round(waitMs / 1000)}s for ${keyEntry.projectLabel}...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+          }
+        }
+
+        try {
+          console.log(
+            `[ProcessChunk] Attempt ${attempt}/${maxAttempts} for chunk ${chunk.chunkIndex} using project key: ${keyEntry.projectLabel}`
+          );
+          
+          translatedItems = await translateChunk(
             chunk.cuesToTranslate,
             job.targetLanguage,
             model,
             job.toneStyle,
-            job.glossary
-          ),
-        {
-          maxAttempts: 5,
-          delayMs: 2000,
-          backoffFactor: 2,
-          shouldRetry: (err) => {
-            const msg = String(err?.message || err || '');
-            const lower = msg.toLowerCase();
+            job.glossary,
+            keyEntry.key
+          );
 
-            // Daily free-tier quota is exhausted — retrying is futile, fail immediately.
-            // This quota resets at midnight PT, not per-minute.
-            if (msg.includes('PerDayPerProjectPerModel-FreeTier') || msg.includes('GenerateRequestsPerDay')) {
-              return false;
+          // Success: report and break
+          keyPool.reportSuccess(keyEntry.key);
+          activeProjectLabel = keyEntry.projectLabel;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          const msg = String(err?.message || err || '');
+          const lower = msg.toLowerCase();
+
+          // Extract suggested retry delay from Gemini headers, if any
+          let customCooldownMs: number | undefined;
+          try {
+            const parsed = JSON.parse(msg);
+            const details: any[] = parsed?.error?.details ?? [];
+            const retryInfo = details.find((d: any) => d['@type']?.includes('RetryInfo'));
+            if (retryInfo?.retryDelay) {
+              const seconds = parseFloat(String(retryInfo.retryDelay).replace('s', ''));
+              if (!isNaN(seconds) && seconds > 0) {
+                customCooldownMs = Math.ceil(seconds * 1000);
+              }
             }
+          } catch {
+            // ignore JSON parse failures
+          }
 
-            // Retry on per-minute rate limits (429), transient errors, or server errors (5xx)
-            return (
-              lower.includes('429') ||
-              lower.includes('rate limit') ||
-              lower.includes('resource_exhausted') ||
-              lower.includes('quota') ||
-              lower.includes('500') ||
-              lower.includes('503') ||
-              lower.includes('network') ||
-              lower.includes('timeout')
-            );
-          },
+          keyPool.reportFailure(keyEntry.key, err, customCooldownMs);
+
+          // If this is not a retryable error (like validation, 400 Bad Request, etc.), abort immediately
+          const isRetryable =
+            lower.includes('429') ||
+            lower.includes('rate limit') ||
+            lower.includes('resource_exhausted') ||
+            lower.includes('quota') ||
+            lower.includes('500') ||
+            lower.includes('503') ||
+            lower.includes('network') ||
+            lower.includes('timeout');
+
+          if (!isRetryable) {
+            throw err;
+          }
+
+          console.warn(
+            `[ProcessChunk Failover] Attempt ${attempt} failed on project key ${keyEntry.projectLabel}. Rotating to next available key...`
+          );
         }
-      );
+      }
+
+      if (!translatedItems) {
+        throw lastErr || new Error('Failed to translate after max attempts.');
+      }
     } finally {
       // Always release rate limiter slot
       globalRateLimiter.release();
@@ -92,8 +147,6 @@ export async function processChunk(
     }
 
     // Patch any missing or empty translations with the source text as fallback.
-    // Gemini sometimes omits sound-effect / music-note cues — this ensures the
-    // output SRT is always complete with no missing cues.
     const translatedMap = new Map(translatedItems.map((t) => [t.index, t]));
     const patchedItems = chunk.cuesToTranslate.map((sourceCue) => {
       const existing = translatedMap.get(sourceCue.index);
@@ -108,8 +161,8 @@ export async function processChunk(
       return existing;
     });
 
-    // Success update
-    const updatedChunk = await ChunksRepository.updateSuccess(chunkId, patchedItems);
+    // Success update - save the used project label
+    const updatedChunk = await ChunksRepository.updateSuccess(chunkId, patchedItems, activeProjectLabel);
     
     // Update job metrics
     await JobsRepository.incrementProcessed(job.id, false);
@@ -119,16 +172,16 @@ export async function processChunk(
     const errorMsg = error?.message || 'Unknown chunk translation error';
     console.error(`[ProcessChunk Error] Chunk ${chunkId} failed:`, errorMsg);
 
-    // Check if this is daily quota exhaustion — splitting won't help since the quota
-    // is per-day. Fail the chunk (and job) immediately with a clear message.
+    // Check if this is daily quota exhaustion (all keys exhausted)
     const isDailyQuotaExhausted =
+      errorMsg.includes('All Gemini API keys daily quota exhausted') ||
       errorMsg.includes('PerDayPerProjectPerModel-FreeTier') ||
       errorMsg.includes('GenerateRequestsPerDay');
 
     if (isDailyQuotaExhausted) {
       const userFacingMsg =
-        'Gemini API daily free-tier quota exhausted (20 requests/day limit). ' +
-        'Please wait until midnight PT for the quota to reset, or upgrade to a paid API key.';
+        'Gemini API daily free-tier quota exhausted on all configured keys. ' +
+        'Please wait until midnight PT for quotas to reset, or add more API keys to the pool.';
       await ChunksRepository.updateFailure(chunkId, userFacingMsg, chunk.retryCount + 1);
       await JobsRepository.incrementProcessed(job.id, true);
       // Propagate so the background runner marks the whole job failed immediately
@@ -136,7 +189,6 @@ export async function processChunk(
     }
 
     // For non-quota persistent failures: dynamically split into two smaller sub-chunks.
-    // This reduces payload size and allows the smaller pieces to be retried.
     if (chunk.cuesToTranslate.length > 1) {
       const mid = Math.floor(chunk.cuesToTranslate.length / 2);
       const cuesA = chunk.cuesToTranslate.slice(0, mid);
@@ -149,11 +201,9 @@ export async function processChunk(
 
       try {
         await ChunksRepository.splitChunk(chunkId, cuesA, cuesB);
-        // Return early — the original chunk is deleted; the background loop will pick up the new sub-chunks.
-        // Do NOT call updateFailure/incrementProcessed here since the chunk no longer exists.
+        // Return early — the original chunk is deleted
         throw new Error(`Chunk split into smaller pieces for retry: ${errorMsg}`);
       } catch (splitErr: any) {
-        // If the split itself failed, fall through to the standard failure path below.
         console.error(`[ProcessChunk Split Error] Could not split chunk ${chunkId}:`, splitErr.message);
       }
     }

@@ -52,6 +52,12 @@ export default function ChunkGrid({ chunks, onRetry, jobStatus }: ChunkGridProps
                 {chunk.cueIndexes.length} cues
               </div>
 
+              {chunk.usedProjectLabel && chunk.status === 'completed' && (
+                <span className="text-[9px] bg-purple-500/10 border border-purple-500/20 text-purple-300 rounded px-1.5 py-0.5 mt-1 font-mono text-center truncate select-all" title={`Translated by: ${chunk.usedProjectLabel}`}>
+                  {chunk.usedProjectLabel}
+                </span>
+              )}
+
               {chunk.status === 'failed' && jobStatus !== 'translating' && (
                 <button
                   onClick={() => onRetry(chunk.id)}

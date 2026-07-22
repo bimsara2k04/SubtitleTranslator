@@ -69,6 +69,7 @@ export async function createJob(req: CreateJobRequest): Promise<CreateJobResult>
       errorMessage: null,
       startedAt: null,
       completedAt: null,
+      usedProjectLabel: null,
     });
   }
 

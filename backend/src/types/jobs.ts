@@ -43,6 +43,7 @@ export type TranslationChunk = {
   errorMessage: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
+  usedProjectLabel: string | null;
 };
 
 export type ValidationReport = {

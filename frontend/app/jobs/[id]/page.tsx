@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, use } from 'react';
 import Link from 'next/link';
-import { getJobDetails, startTranslation, retryChunk, getExportUrl } from '@/lib/api';
+import { getJobDetails, startTranslation, retryChunk, getExportUrl, getJobEstimate, type EstimateResponse } from '@/lib/api';
 import type { JobDetails } from '@/lib/types';
 import ChunkGrid from './components/ChunkGrid';
 import ValidationReport from './components/ValidationReport';
@@ -19,6 +19,11 @@ import {
   Loader2,
   ListRestart,
   RefreshCw,
+  Cpu,
+  Layers,
+  Info,
+  ShieldCheck,
+  Check,
 } from 'lucide-react';
 
 type PageProps = {
@@ -31,6 +36,8 @@ export default function JobStatusPage({ params }: PageProps) {
   const jobId = resolvedParams.id;
 
   const [job, setJob] = useState<JobDetails | null>(null);
+  const [estimate, setEstimate] = useState<EstimateResponse | null>(null);
+  const [estimateLoading, setEstimateLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCueIndex, setSelectedCueIndex] = useState<number | null>(null);
@@ -40,6 +47,18 @@ export default function JobStatusPage({ params }: PageProps) {
     try {
       const data = await getJobDetails(jobId);
       setJob(data);
+
+      if (data.status === 'pending' && !estimate) {
+        setEstimateLoading(true);
+        try {
+          const est = await getJobEstimate(jobId);
+          setEstimate(est);
+        } catch (err) {
+          console.error('Failed to load pre-flight estimates', err);
+        } finally {
+          setEstimateLoading(false);
+        }
+      }
       setError(null);
     } catch (err: any) {
       console.error('Error fetching job details:', err);
@@ -47,7 +66,7 @@ export default function JobStatusPage({ params }: PageProps) {
     } finally {
       setLoading(false);
     }
-  }, [jobId]);
+  }, [jobId, estimate]);
 
   // Polling hook when job is in active translation state
   useEffect(() => {
@@ -56,7 +75,6 @@ export default function JobStatusPage({ params }: PageProps) {
     const interval = setInterval(() => {
       if (job) {
         const isProcessing =
-          job.status === 'pending' ||
           job.status === 'parsing' ||
           job.status === 'translating' ||
           job.status === 'rebuilding';
@@ -69,20 +87,6 @@ export default function JobStatusPage({ params }: PageProps) {
 
     return () => clearInterval(interval);
   }, [fetchJob, job?.status]);
-
-  // Auto-start translation if the job is just loaded and pending
-  useEffect(() => {
-    if (job && job.status === 'pending') {
-      (async () => {
-        try {
-          await startTranslation(jobId);
-          fetchJob();
-        } catch (err: any) {
-          setError(err?.message || 'Failed to start subtitle translation.');
-        }
-      })();
-    }
-  }, [job?.status, jobId, fetchJob]);
 
   const handleStartTranslate = async () => {
     try {
@@ -207,80 +211,233 @@ export default function JobStatusPage({ params }: PageProps) {
 
       {/* Main Grid */}
       <main className="flex-grow max-w-5xl w-full mx-auto py-10 px-4 flex flex-col gap-6">
-        {/* Status Card */}
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl relative overflow-hidden">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-start gap-4">
-              <div className="bg-purple-600/20 border border-purple-500/30 p-3 rounded-2xl text-purple-400">
-                <FileText className="h-6 w-6" />
-              </div>
-              <div>
-                <div className="text-[10px] uppercase text-slate-400 font-mono tracking-wider font-semibold">
-                  Job Workspace ID: {jobId}
+        {job.status === 'pending' ? (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left Column: Estimates & Start Translation */}
+            <div className="lg:col-span-2 flex flex-col gap-6">
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-8 backdrop-blur-2xl shadow-2xl relative overflow-hidden">
+                <div className="absolute top-[-20%] left-[-20%] w-[50%] h-[50%] rounded-full bg-purple-900/5 blur-[80px] pointer-events-none" />
+                
+                <div className="flex items-center gap-3.5 mb-6">
+                  <div className="bg-purple-600/20 border border-purple-500/30 p-3 rounded-2xl text-purple-400">
+                    <Sparkles className="h-6 w-6 animate-pulse" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white">Pre-flight Quota & Call Estimates</h3>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Analysis of subtitle file payload and active Gemini key pool</p>
+                  </div>
                 </div>
-                <h2 className="text-lg font-bold text-white mt-0.5">
-                  {isCompleted
-                    ? 'Translation Completed'
-                    : isFailed
-                    ? 'Translation Interrupted'
-                    : 'Translating Subtitles...'}
-                </h2>
-                <div className="flex items-center gap-4 text-xs text-slate-400 mt-2">
-                  <span className="flex items-center gap-1">
-                    <Clock className="h-3.5 w-3.5" />
-                    Created {new Date(job.createdAt).toLocaleTimeString()}
-                  </span>
-                  <span>&bull;</span>
-                  <span>
-                    {job.totalCues} original cues &bull; {job.totalChunks} chunks
-                  </span>
-                </div>
+
+                {estimateLoading ? (
+                  <div className="flex flex-col items-center justify-center py-16">
+                    <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
+                    <span className="text-xs text-slate-400 mt-3">Analyzing subtitle and token structures...</span>
+                  </div>
+                ) : estimate ? (
+                  <div className="flex flex-col gap-6">
+                    {/* Metrics Grid */}
+                    <div className="grid grid-cols-3 gap-4 bg-white/5 p-5 rounded-2xl border border-white/5">
+                      <div className="flex flex-col text-center">
+                        <span className="text-[10px] uppercase text-slate-400 font-mono tracking-wider">Required Calls</span>
+                        <span className="text-2xl font-black text-purple-300 font-mono mt-1.5">{estimate.estimatedCalls}</span>
+                      </div>
+                      <div className="flex flex-col text-center border-x border-white/5">
+                        <span className="text-[10px] uppercase text-slate-400 font-mono tracking-wider">Est. Tokens</span>
+                        <span className="text-2xl font-black text-purple-300 font-mono mt-1.5">
+                          {estimate.estimatedTotalTokens.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex flex-col text-center">
+                        <span className="text-[10px] uppercase text-slate-400 font-mono tracking-wider">Est. Time</span>
+                        <span className="text-2xl font-black text-purple-300 font-mono mt-1.5">
+                          {Math.max(1, Math.round(estimate.estimatedCalls * 1.5))}m
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Warnings / OK Badges */}
+                    {estimate.throttleWarning ? (
+                      <div className={`p-4.5 rounded-2xl border flex gap-3.5 text-xs leading-relaxed ${
+                        estimate.canCompleteWithFailover 
+                          ? 'bg-amber-500/10 border-amber-500/20 text-amber-300'
+                          : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
+                      }`}>
+                        <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold mb-0.5 text-sm">Quota Failover Notification</p>
+                          <p className="text-[11px] opacity-90">{estimate.throttleWarning}</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 p-4.5 rounded-2xl flex gap-3.5 text-xs leading-relaxed">
+                        <ShieldCheck className="h-5 w-5 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold mb-0.5 text-sm">Quota Health OK</p>
+                          <p className="text-[11px] opacity-90">All configured projects have sufficient quota. Translation will complete without needing failover.</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Action Button */}
+                    <button
+                      onClick={handleStartTranslate}
+                      disabled={loading || (!estimate.canCompleteWithFailover && !confirm('The remaining quota may not be enough to finish. Do you want to try anyway?'))}
+                      className="w-full bg-purple-600 hover:bg-purple-500 disabled:bg-purple-800 text-white font-bold py-4 px-6 rounded-xl text-xs tracking-wider transition-all active:scale-[0.99] hover:shadow-[0_0_20px_rgba(139,92,246,0.4)] disabled:shadow-none flex items-center justify-center gap-2 cursor-pointer mt-2"
+                    >
+                      {loading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin text-white" />
+                          <span>Preparing Workspace...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="h-4 w-4 fill-current animate-pulse" />
+                          <span>Start Translation Run</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400 text-center py-8">Could not calculate job estimates. Try reloading the page.</p>
+                )}
               </div>
             </div>
 
-            {/* Progress Circular/Badge */}
-            <div className="flex flex-col items-end shrink-0">
-              <div className="text-2xl font-black text-purple-300 font-mono">
-                {progressPercent}%
-              </div>
-              <div className="text-[10px] uppercase text-slate-400 font-mono tracking-wider mt-0.5">
-                {job.processedChunks} of {job.totalChunks} chunks processed
+            {/* Right Column: Key Pool status */}
+            <div className="flex flex-col gap-6">
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-2xl shadow-2xl relative overflow-hidden">
+                <div className="absolute bottom-[-20%] right-[-20%] w-[50%] h-[50%] rounded-full bg-violet-900/5 blur-[80px] pointer-events-none" />
+
+                <div className="flex items-center gap-2 mb-5">
+                  <Cpu className="h-4.5 w-4.5 text-purple-400" />
+                  <h3 className="text-xs font-bold text-white tracking-wide uppercase font-mono">Active Gemini Key Pool</h3>
+                </div>
+
+                <div className="flex flex-col gap-3.5">
+                  {estimate?.projects?.map((proj) => (
+                    <div key={proj.label} className="bg-white/5 border border-white/5 hover:border-white/10 rounded-2xl p-4 flex flex-col gap-2.5 transition-all">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-white">{proj.label}</span>
+                        {proj.onCooldown ? (
+                          <span className="text-[9px] bg-rose-500/10 border border-rose-500/20 text-rose-300 px-2 py-0.5 rounded-full font-mono font-medium">
+                            Cooldown
+                          </span>
+                        ) : proj.canCompleteJobAlone ? (
+                          <span className="text-[9px] bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-medium flex items-center gap-0.5">
+                            <Check className="h-2.5 w-2.5" /> Can run alone
+                          </span>
+                        ) : (
+                          <span className="text-[9px] bg-amber-500/10 border border-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-medium">
+                            Needs failover
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mt-1">
+                        <span>Used today:</span>
+                        <span>{proj.dailyCallsUsed} / {proj.dailyCallsLimit}</span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                        <span>Remaining calls:</span>
+                        <span className={proj.dailyCallsRemaining === 0 ? 'text-rose-400 font-black' : 'text-purple-300 font-black'}>
+                          {proj.dailyCallsRemaining}
+                        </span>
+                      </div>
+
+                      {proj.cooldownExpiresAt && (
+                        <div className="text-[8px] text-slate-500 font-mono mt-1 text-right">
+                          Expires: {new Date(proj.cooldownExpiresAt).toLocaleTimeString()}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {(!estimate?.projects || estimate.projects.length === 0) && (
+                    <p className="text-[10px] text-slate-500 text-center py-4">No active projects configured.</p>
+                  )}
+                </div>
               </div>
             </div>
           </div>
+        ) : (
+          <>
+            {/* Status Card */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl relative overflow-hidden">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-start gap-4">
+                  <div className="bg-purple-600/20 border border-purple-500/30 p-3 rounded-2xl text-purple-400">
+                    <FileText className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase text-slate-400 font-mono tracking-wider font-semibold">
+                      Job Workspace ID: {jobId}
+                    </div>
+                    <h2 className="text-lg font-bold text-white mt-0.5">
+                      {isCompleted
+                        ? 'Translation Completed'
+                        : isFailed
+                        ? 'Translation Interrupted'
+                        : 'Translating Subtitles...'}
+                    </h2>
+                    <div className="flex items-center gap-4 text-xs text-slate-400 mt-2">
+                      <span className="flex items-center gap-1">
+                        <Clock className="h-3.5 w-3.5" />
+                        Created {new Date(job.createdAt).toLocaleTimeString()}
+                      </span>
+                      <span>&bull;</span>
+                      <span>
+                        {job.totalCues} original cues &bull; {job.totalChunks} chunks
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
-          {/* Progress Bar */}
-          <div className="w-full bg-white/5 rounded-full h-2 mt-6 overflow-hidden border border-white/5">
-            <div
-              className="bg-gradient-to-r from-purple-600 to-indigo-500 h-full rounded-full transition-all duration-500"
-              style={{ width: `${progressPercent}%` }}
+                {/* Progress Circular/Badge */}
+                <div className="flex flex-col items-end shrink-0">
+                  <div className="text-2xl font-black text-purple-300 font-mono">
+                    {progressPercent}%
+                  </div>
+                  <div className="text-[10px] uppercase text-slate-400 font-mono tracking-wider mt-0.5">
+                    {job.processedChunks} of {job.totalChunks} chunks processed
+                  </div>
+                </div>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="w-full bg-white/5 rounded-full h-2 mt-6 overflow-hidden border border-white/5">
+                <div
+                  className="bg-gradient-to-r from-purple-600 to-indigo-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+
+              {job.errorMessage && isFailed && (
+                <div className="bg-rose-500/10 border border-rose-500/20 text-rose-300 rounded-xl p-4 flex gap-3 items-start text-xs leading-normal mt-4">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold">Error summary: </span>
+                    <span>{job.errorMessage}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Chunks grid */}
+            <ChunkGrid chunks={job.chunks} onRetry={handleRetryChunk} jobStatus={job.status} />
+
+            {/* Quality control validation list */}
+            <ValidationReport issues={job.validationIssues} onSelectCue={handleSelectCue} />
+
+            {/* Side by side preview */}
+            <SubtitlePreview
+              chunks={job.chunks}
+              validationIssues={job.validationIssues}
+              selectedCueIndex={selectedCueIndex}
+              onClearSelectedCue={handleClearSelectedCue}
             />
-          </div>
-
-          {job.errorMessage && isFailed && (
-            <div className="bg-rose-500/10 border border-rose-500/20 text-rose-300 rounded-xl p-4 flex gap-3 items-start text-xs leading-normal mt-4">
-              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold">Error summary: </span>
-                <span>{job.errorMessage}</span>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Chunks grid */}
-        <ChunkGrid chunks={job.chunks} onRetry={handleRetryChunk} jobStatus={job.status} />
-
-        {/* Quality control validation list */}
-        <ValidationReport issues={job.validationIssues} onSelectCue={handleSelectCue} />
-
-        {/* Side by side preview */}
-        <SubtitlePreview
-          chunks={job.chunks}
-          validationIssues={job.validationIssues}
-          selectedCueIndex={selectedCueIndex}
-          onClearSelectedCue={handleClearSelectedCue}
-        />
+          </>
+        )}
       </main>
 
       {/* Footer */}

@@ -1,24 +1,39 @@
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, Firestore } from 'firebase-admin/firestore';
 
-const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+function initAdmin(): Firestore {
+  if (getApps().length === 0) {
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!serviceAccountJson) {
+      throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is missing.');
+    }
+    let serviceAccount: Record<string, any>;
+    try {
+      serviceAccount = JSON.parse(serviceAccountJson);
+      if (typeof serviceAccount.private_key === 'string') {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+      }
+    } catch (e: any) {
+      throw new Error(`Failed to parse FIREBASE_SERVICE_ACCOUNT JSON: ${e?.message}`);
+    }
 
-function getServiceAccount(): Record<string, any> | null {
-  if (!serviceAccountJson) return null;
-  try {
-    return JSON.parse(serviceAccountJson);
-  } catch {
-    return null;
+    initializeApp({
+      credential: cert(serviceAccount),
+    });
   }
+  return getFirestore();
 }
 
-const serviceAccount = getServiceAccount();
+// Proxy lazily initializes Firebase Admin on first method call (e.g. adminDb.collection)
+export const adminDb = new Proxy({} as Firestore, {
+  get(_target, prop) {
+    const instance = initAdmin() as any;
+    const value = instance[prop];
+    if (typeof value === 'function') {
+      return value.bind(instance);
+    }
+    return value;
+  },
+});
 
-if (getApps().length === 0 && serviceAccount) {
-  initializeApp({
-    credential: cert(serviceAccount),
-  });
-}
-
-export const adminDb = getApps().length > 0 ? getFirestore() : ({} as ReturnType<typeof getFirestore>);
 export default adminDb;

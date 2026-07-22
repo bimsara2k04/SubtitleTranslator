@@ -1,6 +1,18 @@
 import type { JobDetails } from './types.js';
+import { auth } from './firebase.js';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const user = auth.currentUser;
+  if (!user) return {};
+  try {
+    const token = await user.getIdToken();
+    return { Authorization: `Bearer ${token}` };
+  } catch {
+    return {};
+  }
+}
 
 export type UploadParams = {
   file: File;
@@ -27,8 +39,13 @@ export async function uploadSRT(params: UploadParams): Promise<UploadResponse> {
     formData.append('glossary', params.glossary);
   }
 
+  const authHeaders = await getAuthHeaders();
+
   const res = await fetch(`${BACKEND_URL}/api/upload`, {
     method: 'POST',
+    headers: {
+      ...authHeaders,
+    },
     body: formData,
   });
 
@@ -41,7 +58,12 @@ export async function uploadSRT(params: UploadParams): Promise<UploadResponse> {
 }
 
 export async function getJobDetails(jobId: string): Promise<JobDetails> {
-  const res = await fetch(`${BACKEND_URL}/api/jobs/${jobId}`);
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${BACKEND_URL}/api/jobs/${jobId}`, {
+    headers: {
+      ...authHeaders,
+    },
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error?.message || `Failed to fetch job details: ${res.status}`);
@@ -52,8 +74,12 @@ export async function getJobDetails(jobId: string): Promise<JobDetails> {
 }
 
 export async function startTranslation(jobId: string): Promise<void> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${BACKEND_URL}/api/jobs/${jobId}/translate`, {
     method: 'POST',
+    headers: {
+      ...authHeaders,
+    },
   });
 
   if (!res.ok) {
@@ -63,8 +89,12 @@ export async function startTranslation(jobId: string): Promise<void> {
 }
 
 export async function retryChunk(jobId: string, chunkId: string): Promise<void> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${BACKEND_URL}/api/jobs/${jobId}/retry-chunk/${chunkId}`, {
     method: 'POST',
+    headers: {
+      ...authHeaders,
+    },
   });
 
   if (!res.ok) {
@@ -99,7 +129,12 @@ export type EstimateResponse = {
 };
 
 export async function getJobEstimate(jobId: string): Promise<EstimateResponse> {
-  const res = await fetch(`${BACKEND_URL}/api/jobs/${jobId}/estimate`);
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${BACKEND_URL}/api/jobs/${jobId}/estimate`, {
+    headers: {
+      ...authHeaders,
+    },
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error?.message || `Failed to fetch job estimates: ${res.status}`);

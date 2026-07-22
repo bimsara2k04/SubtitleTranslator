@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useDropzone } from 'react-dropzone';
 import { uploadSRT } from '@/lib/api';
+import Header from './components/Header';
 import { Upload, FileText, Globe, Cpu, Languages, Sparkles, BookOpen, AlertCircle } from 'lucide-react';
 
 const TARGET_LANGUAGES = [
@@ -94,25 +95,8 @@ export default function UploadPage() {
       <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] rounded-full bg-purple-900/10 blur-[120px] pointer-events-none" />
       <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] rounded-full bg-violet-900/10 blur-[120px] pointer-events-none" />
 
-      {/* Header */}
-      <header className="border-b border-white/5 bg-black/20 backdrop-blur-md px-8 py-4 sticky top-0 z-50">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-purple-600/20 border border-purple-500/30 p-2 rounded-xl text-purple-400">
-              <Sparkles className="h-5 w-5 animate-pulse" />
-            </div>
-            <div>
-              <h1 className="font-bold text-base tracking-tight text-white">Gemini Subtitle Translator</h1>
-              <p className="text-[10px] text-slate-400/80">Structured SRT translation with metadata preservation</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 text-xs">
-            <a href="https://github.com/bimsara2k04/SubtitleTranslator" target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-slate-100 transition-colors">
-              Repository
-            </a>
-          </div>
-        </div>
-      </header>
+      {/* Navigation Header */}
+      <Header />
 
       {/* Main Content */}
       <main className="flex-grow flex items-center justify-center py-16 px-4">

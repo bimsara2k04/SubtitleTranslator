@@ -1,3 +1,5 @@
+export const runtime = 'nodejs';
+
 import { NextResponse } from 'next/server';
 import { createJob } from '@/lib/server/services/jobs/createJob';
 import { JobsRepository } from '@/lib/server/db/repositories/jobs';

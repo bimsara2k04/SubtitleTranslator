@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useAuth } from '../../lib/auth-context';
-import { X, Mail, Lock, AlertCircle, LogIn, UserPlus } from 'lucide-react';
+import { X, Mail, Lock, AlertCircle, LogIn } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -10,8 +10,7 @@ interface AuthModalProps {
 }
 
 export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
-  const { signInWithGoogle, signInWithEmail, signUpWithEmail } = useAuth();
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const { signInWithGoogle, signInWithEmail } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -29,18 +28,12 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
 
     setSubmitting(true);
     try {
-      if (mode === 'signin') {
-        await signInWithEmail(email, password);
-      } else {
-        await signUpWithEmail(email, password);
-      }
+      await signInWithEmail(email, password);
       onClose();
     } catch (err: any) {
       const msg = err?.message || 'Authentication failed.';
       if (msg.includes('auth/invalid-credential') || msg.includes('auth/user-not-found') || msg.includes('auth/wrong-password')) {
         setError('Invalid email or password.');
-      } else if (msg.includes('auth/email-already-in-use')) {
-        setError('An account with this email already exists.');
       } else if (msg.includes('auth/weak-password')) {
         setError('Password should be at least 6 characters.');
       } else {
@@ -78,43 +71,11 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
         {/* Modal Header */}
         <div className="text-center mb-6">
           <h2 className="text-2xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-indigo-300 bg-clip-text text-transparent">
-            {mode === 'signin' ? 'Welcome Back' : 'Create Account'}
+            Welcome Back
           </h2>
           <p className="text-sm text-slate-400 mt-1">
-            {mode === 'signin'
-              ? 'Sign in to manage and translate your SRT files'
-              : 'Register to unlock full translation history and features'}
+            Sign in to manage and translate your SRT files
           </p>
-        </div>
-
-        {/* Mode Switch Tabs */}
-        <div className="flex bg-slate-900/80 p-1 rounded-xl mb-6 border border-white/5">
-          <button
-            onClick={() => {
-              setMode('signin');
-              setError(null);
-            }}
-            className={`flex-1 py-2 text-sm font-medium rounded-lg transition ${
-              mode === 'signin'
-                ? 'bg-purple-600/30 text-purple-200 border border-purple-500/30'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Sign In
-          </button>
-          <button
-            onClick={() => {
-              setMode('signup');
-              setError(null);
-            }}
-            className={`flex-1 py-2 text-sm font-medium rounded-lg transition ${
-              mode === 'signup'
-                ? 'bg-purple-600/30 text-purple-200 border border-purple-500/30'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Register
-          </button>
         </div>
 
         {/* Error Alert */}
@@ -198,17 +159,8 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
             disabled={submitting}
             className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-sm transition shadow-lg shadow-purple-900/30 disabled:opacity-50 mt-2"
           >
-            {mode === 'signin' ? (
-              <>
-                <LogIn className="w-4 h-4" />
-                Sign In
-              </>
-            ) : (
-              <>
-                <UserPlus className="w-4 h-4" />
-                Create Account
-              </>
-            )}
+            <LogIn className="w-4 h-4" />
+            Sign In
           </button>
         </form>
       </div>

@@ -23,7 +23,7 @@ async function runBackgroundJob(jobId: string): Promise<void> {
 
       attemptedChunkIds.add(nextChunk.id);
       try {
-        await processChunk(nextChunk.id);
+        await processChunk(jobId, nextChunk.id);
       } catch (err: any) {
         const msg = err?.message || String(err);
         if (msg.includes('daily free-tier quota exhausted') || msg.includes('PerDayPerProjectPerModel-FreeTier')) {

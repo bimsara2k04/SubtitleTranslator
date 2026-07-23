@@ -7,17 +7,18 @@ import { keyPool } from '../gemini/keyPool';
 import type { TranslationChunk } from '../../types/jobs';
 
 export async function processChunk(
+  jobId: string,
   chunkId: string,
   modelOverride?: string
 ): Promise<TranslationChunk> {
-  const chunk = await ChunksRepository.findById(chunkId);
+  const chunk = await ChunksRepository.findById(jobId, chunkId);
   if (!chunk) {
     throw new Error(`Chunk ${chunkId} not found`);
   }
 
-  const job = await JobsRepository.findById(chunk.jobId);
+  const job = await JobsRepository.findById(jobId);
   if (!job) {
-    throw new Error(`Job ${chunk.jobId} associated with chunk ${chunkId} not found`);
+    throw new Error(`Job ${jobId} associated with chunk ${chunkId} not found`);
   }
 
   await ChunksRepository.updateStatus(chunkId, 'processing', {

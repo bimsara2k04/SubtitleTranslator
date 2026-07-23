@@ -44,16 +44,16 @@ export class ChunksRepository {
     return docToChunk(docRef.id, snap.data()!);
   }
 
-  static async findById(id: string): Promise<TranslationChunk | null> {
-    const groupSnap = await db
-      .collectionGroup('chunks')
-      .where(FieldPath.documentId(), '==', id)
-      .limit(1)
+  static async findById(jobId: string, id: string): Promise<TranslationChunk | null> {
+    const snap = await db
+      .collection('jobs')
+      .doc(jobId)
+      .collection('chunks')
+      .doc(id)
       .get();
 
-    if (groupSnap.empty) return null;
-    const doc = groupSnap.docs[0]!;
-    return docToChunk(doc.id, doc.data());
+    if (!snap.exists) return null;
+    return docToChunk(snap.id, snap.data()!);
   }
 
   static async findByJobId(jobId: string): Promise<TranslationChunk[]> {

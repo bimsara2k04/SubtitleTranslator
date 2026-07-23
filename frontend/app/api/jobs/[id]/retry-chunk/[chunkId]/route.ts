@@ -22,7 +22,7 @@ export async function POST(
       return NextResponse.json({ error: { message: 'Job not found' } }, { status: 404 });
     }
 
-    const chunk = await ChunksRepository.findById(chunkId);
+    const chunk = await ChunksRepository.findById(id, chunkId);
     if (!chunk || chunk.jobId !== id) {
       return NextResponse.json({ error: { message: 'Chunk not found in this job' } }, { status: 404 });
     }
@@ -30,7 +30,7 @@ export async function POST(
     after(async () => {
       try {
         await JobsRepository.updateStatus(id, 'translating');
-        await processChunk(chunkId);
+        await processChunk(id, chunkId);
 
         const chunks = await ChunksRepository.findByJobId(id);
         const allCompleted = chunks.every((c) => c.status === 'completed');

@@ -41,6 +41,7 @@ export default function JobStatusPage({ params }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCueIndex, setSelectedCueIndex] = useState<number | null>(null);
+  const [isTriggering, setIsTriggering] = useState(false);
 
   // Fetch job details
   const fetchJob = useCallback(async () => {
@@ -87,6 +88,26 @@ export default function JobStatusPage({ params }: PageProps) {
 
     return () => clearInterval(interval);
   }, [fetchJob, job?.status]);
+
+  // Client-driven translation loop to prevent serverless timeouts
+  useEffect(() => {
+    if (!job || job.status !== 'translating' || isTriggering) return;
+
+    const hasProcessing = job.chunks.some((c) => c.status === 'processing');
+    const hasPendingOrFailed = job.chunks.some((c) => c.status === 'pending' || c.status === 'failed');
+
+    if (!hasProcessing && hasPendingOrFailed) {
+      setIsTriggering(true);
+      startTranslation(jobId)
+        .catch((err) => {
+          console.error('Failed to trigger chunk translation:', err);
+        })
+        .finally(() => {
+          setIsTriggering(false);
+          fetchJob();
+        });
+    }
+  }, [job, jobId, isTriggering, fetchJob]);
 
   const handleStartTranslate = async () => {
     try {

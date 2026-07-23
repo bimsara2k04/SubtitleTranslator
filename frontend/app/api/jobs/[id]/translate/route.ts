@@ -1,64 +1,18 @@
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-import { NextResponse, after } from 'next/server';
+import { NextResponse } from 'next/server';
 import { JobsRepository } from '@/lib/server/db/repositories/jobs';
 import { ChunksRepository } from '@/lib/server/db/repositories/chunks';
 import { processChunk } from '@/lib/server/services/jobs/processChunk';
 import { rebuildOutput } from '@/lib/server/services/jobs/rebuildOutput';
 
-async function runBackgroundJob(jobId: string): Promise<void> {
-  try {
-    await JobsRepository.updateStatus(jobId, 'translating');
-
-    const attemptedChunkIds = new Set<string>();
-    while (true) {
-      const currentChunks = await ChunksRepository.findByJobId(jobId);
-      const nextChunk = currentChunks.find(
-        (c) => (c.status === 'pending' || c.status === 'failed') && !attemptedChunkIds.has(c.id)
-      );
-      if (!nextChunk) {
-        break;
-      }
-
-      attemptedChunkIds.add(nextChunk.id);
-      try {
-        await processChunk(jobId, nextChunk.id);
-      } catch (err: any) {
-        const msg = err?.message || String(err);
-        if (msg.includes('daily free-tier quota exhausted') || msg.includes('PerDayPerProjectPerModel-FreeTier')) {
-          throw err;
-        }
-        console.warn(`[BackgroundJob] Chunk ${nextChunk.id} failed or was split:`, msg);
-      }
-    }
-
-    const updatedChunks = await ChunksRepository.findByJobId(jobId);
-    const allCompleted = updatedChunks.every((c) => c.status === 'completed');
-
-    if (allCompleted) {
-      await JobsRepository.updateStatus(jobId, 'rebuilding');
-      await rebuildOutput(jobId);
-      await JobsRepository.updateStatus(jobId, 'completed');
-    } else {
-      await JobsRepository.updateStatus(jobId, 'failed', {
-        errorMessage: 'Some subtitle chunks failed to translate.',
-      });
-    }
-  } catch (error: any) {
-    console.error(`[BackgroundJob Error] Job ${jobId} failed:`, error);
-    await JobsRepository.updateStatus(jobId, 'failed', {
-      errorMessage: error?.message || 'Unexpected background error',
-    });
-  }
-}
-
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const { id } = await params;
   try {
-    const { id } = await params;
     if (!id) {
       return NextResponse.json({ error: { message: 'Missing job id' } }, { status: 400 });
     }
@@ -68,21 +22,68 @@ export async function POST(
       return NextResponse.json({ error: { message: 'Job not found' } }, { status: 404 });
     }
 
-    if (job.status === 'translating') {
-      return NextResponse.json({ error: { message: 'Job is already translating.' } }, { status: 400 });
+    // Set status to translating if it was pending or failed
+    if (job.status !== 'translating') {
+      await JobsRepository.updateStatus(id, 'translating');
     }
 
-    // Schedule background worker execution after response is sent
-    after(() => runBackgroundJob(id));
-
-    return NextResponse.json(
-      { message: 'Translation started in background.', jobId: id },
-      { status: 202 }
+    // Find the first pending or failed chunk to process
+    const currentChunks = await ChunksRepository.findByJobId(id);
+    const nextChunk = currentChunks.find(
+      (c) => c.status === 'pending' || c.status === 'failed'
     );
+
+    if (nextChunk) {
+      try {
+        console.log(`[Translate API] Processing chunk ${nextChunk.id} (index ${nextChunk.chunkIndex}) synchronously`);
+        await processChunk(id, nextChunk.id);
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        console.warn(`[Translate API] Chunk ${nextChunk.id} failed or was split during sync execution:`, msg);
+        
+        // If it's a quota exhaust error, bubble it up
+        if (msg.includes('daily free-tier quota exhausted') || msg.includes('PerDayPerProjectPerModel-FreeTier')) {
+          await JobsRepository.updateStatus(id, 'failed', { errorMessage: msg });
+          return NextResponse.json({ error: { message: msg } }, { status: 429 });
+        }
+      }
+    }
+
+    // After attempting to process, get the latest chunk states
+    const updatedChunks = await ChunksRepository.findByJobId(id);
+    const allCompleted = updatedChunks.every((c) => c.status === 'completed');
+    const anyFailed = updatedChunks.some((c) => c.status === 'failed');
+    const hasRemaining = updatedChunks.some((c) => c.status === 'pending' || c.status === 'failed');
+
+    if (allCompleted) {
+      await JobsRepository.updateStatus(id, 'rebuilding');
+      await rebuildOutput(id);
+      await JobsRepository.updateStatus(id, 'completed');
+      return NextResponse.json({ message: 'Job completed.', status: 'completed' });
+    } else if (!hasRemaining && anyFailed) {
+      // If there are no pending chunks and some failed (without split), mark job as failed
+      await JobsRepository.updateStatus(id, 'failed', {
+        errorMessage: 'Some subtitle chunks failed to translate.',
+      });
+      return NextResponse.json({ message: 'Job failed.', status: 'failed' });
+    }
+
+    return NextResponse.json({
+      message: 'Chunk step processed.',
+      status: 'translating',
+      processedChunks: updatedChunks.filter(c => c.status === 'completed').length,
+      totalChunks: updatedChunks.length
+    });
+
   } catch (error: any) {
     console.error('[API StartTranslation Error]', error);
+    if (id) {
+      await JobsRepository.updateStatus(id, 'failed', {
+        errorMessage: error?.message || 'Unexpected translation run error',
+      });
+    }
     return NextResponse.json(
-      { error: { message: error?.message || 'Failed to start translation' } },
+      { error: { message: error?.message || 'Failed to execute translation step' } },
       { status: 500 }
     );
   }

@@ -68,18 +68,19 @@ export class ChunksRepository {
   }
 
   static async updateStatus(
+    jobId: string,
     id: string,
     status: ChunkStatus,
     extra: Partial<Omit<TranslationChunk, 'id' | 'status'>> = {}
   ): Promise<TranslationChunk> {
-    const groupSnap = await db
-      .collectionGroup('chunks')
-      .where(FieldPath.documentId(), '==', id)
-      .limit(1)
-      .get();
+    const docRef = db
+      .collection('jobs')
+      .doc(jobId)
+      .collection('chunks')
+      .doc(id);
 
-    if (groupSnap.empty) throw new Error(`Chunk ${id} not found`);
-    const doc = groupSnap.docs[0]!;
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error(`Chunk ${id} not found`);
 
     const updatePayload: Record<string, unknown> = { status };
     if (extra.retryCount !== undefined) updatePayload['retryCount'] = extra.retryCount;
@@ -89,17 +90,18 @@ export class ChunksRepository {
     if (extra.completedAt !== undefined) updatePayload['completedAt'] = extra.completedAt;
     if (extra.usedProjectLabel !== undefined) updatePayload['usedProjectLabel'] = extra.usedProjectLabel;
 
-    await doc.ref.update(updatePayload);
-    const updated = await doc.ref.get();
+    await docRef.update(updatePayload);
+    const updated = await docRef.get();
     return docToChunk(updated.id, updated.data()!);
   }
 
   static async updateSuccess(
+    jobId: string,
     id: string,
     translatedItems: TranslationItem[],
     usedProjectLabel: string
   ): Promise<TranslationChunk> {
-    return this.updateStatus(id, 'completed', {
+    return this.updateStatus(jobId, id, 'completed', {
       translatedItems,
       errorMessage: null,
       completedAt: new Date(),
@@ -108,11 +110,12 @@ export class ChunksRepository {
   }
 
   static async updateFailure(
+    jobId: string,
     id: string,
     errorMessage: string,
     retryCount: number
   ): Promise<TranslationChunk> {
-    return this.updateStatus(id, 'failed', {
+    return this.updateStatus(jobId, id, 'failed', {
       errorMessage,
       retryCount,
       completedAt: new Date(),
@@ -120,20 +123,20 @@ export class ChunksRepository {
   }
 
   static async splitChunk(
+    jobId: string,
     chunkId: string,
     cuesA: SubtitleCue[],
     cuesB: SubtitleCue[]
   ): Promise<void> {
-    const groupSnap = await db
-      .collectionGroup('chunks')
-      .where(FieldPath.documentId(), '==', chunkId)
-      .limit(1)
-      .get();
+    const originalDocRef = db
+      .collection('jobs')
+      .doc(jobId)
+      .collection('chunks')
+      .doc(chunkId);
 
-    if (groupSnap.empty) throw new Error(`Chunk ${chunkId} not found for split`);
-    const originalDoc = groupSnap.docs[0]!;
-    const originalData = originalDoc.data();
-    const jobId: string = originalData['jobId'];
+    const originalSnap = await originalDocRef.get();
+    if (!originalSnap.exists) throw new Error(`Chunk ${chunkId} not found for split`);
+    const originalData = originalSnap.data()!;
     const chunkIndex: number = originalData['chunkIndex'];
 
     const jobRef = db.collection('jobs').doc(jobId);
@@ -153,7 +156,7 @@ export class ChunksRepository {
       batch.update(doc.ref, { chunkIndex: (doc.data()['chunkIndex'] as number) + 1 });
     }
 
-    batch.delete(originalDoc.ref);
+    batch.delete(originalDocRef);
 
     const chunkARef = chunksRef.doc();
     batch.set(chunkARef, {

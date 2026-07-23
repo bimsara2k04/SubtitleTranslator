@@ -21,7 +21,7 @@ export async function processChunk(
     throw new Error(`Job ${jobId} associated with chunk ${chunkId} not found`);
   }
 
-  await ChunksRepository.updateStatus(chunkId, 'processing', {
+  await ChunksRepository.updateStatus(jobId, chunkId, 'processing', {
     startedAt: new Date(),
   });
 
@@ -148,7 +148,7 @@ export async function processChunk(
       return existing;
     });
 
-    const updatedChunk = await ChunksRepository.updateSuccess(chunkId, patchedItems, activeProjectLabel);
+    const updatedChunk = await ChunksRepository.updateSuccess(jobId, chunkId, patchedItems, activeProjectLabel);
     await JobsRepository.incrementProcessed(job.id, false);
 
     return updatedChunk;
@@ -165,7 +165,7 @@ export async function processChunk(
       const userFacingMsg =
         'Gemini API daily free-tier quota exhausted on all configured keys. ' +
         'Please wait until midnight PT for quotas to reset, or add more API keys to the pool.';
-      await ChunksRepository.updateFailure(chunkId, userFacingMsg, chunk.retryCount + 1);
+      await ChunksRepository.updateFailure(jobId, chunkId, userFacingMsg, chunk.retryCount + 1);
       await JobsRepository.incrementProcessed(job.id, true);
       throw new Error(userFacingMsg);
     }
@@ -181,7 +181,7 @@ export async function processChunk(
       );
 
       try {
-        await ChunksRepository.splitChunk(chunkId, cuesA, cuesB);
+        await ChunksRepository.splitChunk(jobId, chunkId, cuesA, cuesB);
         throw new Error(`Chunk split into smaller pieces for retry: ${errorMsg}`);
       } catch (splitErr: any) {
         console.error(`[ProcessChunk Split Error] Could not split chunk ${chunkId}:`, splitErr.message);
@@ -189,6 +189,7 @@ export async function processChunk(
     }
 
     const updatedChunk = await ChunksRepository.updateFailure(
+      jobId,
       chunkId,
       errorMsg,
       chunk.retryCount + 1

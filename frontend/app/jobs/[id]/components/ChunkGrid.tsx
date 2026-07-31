@@ -1,13 +1,13 @@
 'use client';
 
 import React from 'react';
-import type { TranslationChunk } from '@/lib/types';
-import { Play, RotateCcw, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
+import type { TranslationChunk, JobStatus } from '@/lib/types';
+import { RotateCcw, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
 
 type ChunkGridProps = {
   chunks: TranslationChunk[];
   onRetry: (chunkId: string) => void;
-  jobStatus: string;
+  jobStatus: JobStatus;
 };
 
 export default function ChunkGrid({ chunks, onRetry, jobStatus }: ChunkGridProps) {

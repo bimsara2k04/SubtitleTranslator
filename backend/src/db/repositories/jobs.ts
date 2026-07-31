@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { eq, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../client.js';
-import { translationJobs, validationReports } from '../schema.js';
+import { translationJobs, translationChunks, validationReports } from '../schema.js';
 import type { TranslationJob, JobStatus } from '../../types/jobs.js';
 import type { ValidationIssue } from '../../types/subtitles.js';
 
@@ -61,37 +61,25 @@ export class JobsRepository {
     return updated;
   }
 
-  static async incrementProcessed(id: string, isFailed = false): Promise<TranslationJob> {
-    const job = await this.findById(id);
-    if (!job) {
-      throw new Error(`Job ${id} not found`);
-    }
-
-    const processedChunks = job.processedChunks + 1;
-    const failedChunks = isFailed ? job.failedChunks + 1 : job.failedChunks;
-    
-    // Check if we are finished
-    let status = job.status;
-    if (processedChunks >= job.totalChunks) {
-      status = failedChunks > 0 ? 'failed' : 'completed';
-    }
-
-    const [updated] = await db
+  /**
+   * Atomically claim a job for the background worker.
+   *
+   * Only jobs in `pending`, `failed`, or `completed` can be claimed. Two
+   * concurrent `/translate` or `/retry-chunk` calls race on this UPDATE and
+   * exactly one wins, preventing duplicate background workers per job.
+   */
+  static async claimForTranslation(id: string): Promise<boolean> {
+    const result = await db
       .update(translationJobs)
-      .set({
-        processedChunks,
-        failedChunks,
-        status,
-        updatedAt: new Date(),
-      })
-      .where(eq(translationJobs.id, id))
-      .returning();
+      .set({ status: 'translating', updatedAt: new Date() })
+      .where(
+        and(
+          eq(translationJobs.id, id),
+          inArray(translationJobs.status, ['pending', 'failed', 'completed'])
+        )
+      );
 
-    if (!updated) {
-      throw new Error(`Failed to update progress for job ${id}`);
-    }
-
-    return updated;
+    return (result.rowCount ?? 0) > 0;
   }
 
   static async addValidationReport(
@@ -119,5 +107,41 @@ export class JobsRepository {
       .where(eq(validationReports.jobId, jobId));
 
     return reports.flatMap((r) => r.issues);
+  }
+
+  /**
+   * Recover jobs that were left mid-flight by a crash or restart.
+   * - Chunks stuck in `processing` older than the lease are reset to `pending`.
+   * - Jobs stuck in `translating`/`rebuilding` older than the lease are marked
+   *   `failed` so the user can retry them.
+   * Run once at server startup.
+   */
+  static async recoverStaleJobs(leaseMs = 10 * 60 * 1000): Promise<void> {
+    const staleBefore = new Date(Date.now() - leaseMs);
+
+    await db
+      .update(translationChunks)
+      .set({ status: 'pending', errorMessage: null, completedAt: null })
+      .where(
+        and(
+          eq(translationChunks.status, 'processing'),
+          sql`${translationChunks.startedAt} IS NOT NULL AND ${translationChunks.startedAt} < ${staleBefore}`
+        )
+      );
+
+    await db
+      .update(translationJobs)
+      .set({
+        status: 'failed',
+        errorMessage:
+          'Translation was interrupted (server restarted). Press "Restart Translation" to resume.',
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          inArray(translationJobs.status, ['translating', 'rebuilding']),
+          sql`${translationJobs.updatedAt} < ${staleBefore}`
+        )
+      );
   }
 }

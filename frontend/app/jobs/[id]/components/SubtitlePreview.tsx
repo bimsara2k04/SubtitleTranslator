@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo, useCallback } from 'react';
 import type { SubtitleCue, TranslationChunk, ValidationIssue } from '@/lib/types';
-import { ArrowRight, Eye, AlertTriangle, MessageSquare } from 'lucide-react';
+import { ArrowRight, Eye, AlertTriangle } from 'lucide-react';
 
 type SubtitlePreviewProps = {
   chunks: TranslationChunk[];
@@ -10,6 +10,14 @@ type SubtitlePreviewProps = {
   selectedCueIndex: number | null;
   onClearSelectedCue: () => void;
 };
+
+type PreviewCue = SubtitleCue & {
+  translatedLines: string[] | null;
+  chunkIndex: number;
+  chunkStatus: TranslationChunk['status'];
+};
+
+const HIGHLIGHT_MS = 2000;
 
 export default function SubtitlePreview({
   chunks,
@@ -19,38 +27,59 @@ export default function SubtitlePreview({
 }: SubtitlePreviewProps) {
   const rowRefs = useRef<{ [key: number]: HTMLTableRowElement | null }>({});
 
-  // Scroll to the selected cue index when it updates
-  useEffect(() => {
-    if (selectedCueIndex !== null) {
-      const element = rowRefs.current[selectedCueIndex];
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // Highlight effect
-        element.classList.add('bg-purple-500/20');
-        const timer = setTimeout(() => {
-          element.classList.remove('bg-purple-500/20');
-          onClearSelectedCue();
-        }, 2000);
-        return () => clearTimeout(timer);
+  // Index validation issues by cue for O(1) lookups during render.
+  const issuesByCue = useMemo(() => {
+    const map = new Map<number, ValidationIssue[]>();
+    for (const issue of validationIssues) {
+      if (issue.cueIndex === null) continue;
+      const list = map.get(issue.cueIndex) ?? [];
+      list.push(issue);
+      map.set(issue.cueIndex, list);
+    }
+    return map;
+  }, [validationIssues]);
+
+  // Flatten cues and map translations by index once, keyed on chunks.
+  const allCues = useMemo<PreviewCue[]>(() => {
+    const translationByIndex = new Map<number, string[]>();
+    for (const chunk of chunks) {
+      for (const item of chunk.translatedItems ?? []) {
+        translationByIndex.set(item.index, item.translatedLines);
       }
     }
-  }, [selectedCueIndex, onClearSelectedCue]);
 
-  // Aggregate all cues across chunks
-  const allCues = chunks
-    .flatMap((chunk) => {
-      return chunk.cuesToTranslate.map((cue) => {
-        // Map corresponding translation if complete
-        const translation = chunk.translatedItems?.find((t) => t.index === cue.index);
-        return {
+    return chunks
+      .flatMap((chunk) =>
+        chunk.cuesToTranslate.map((cue) => ({
           ...cue,
-          translatedLines: translation?.translatedLines || null,
+          translatedLines: translationByIndex.get(cue.index) ?? null,
           chunkIndex: chunk.chunkIndex,
           chunkStatus: chunk.status,
-        };
-      });
-    })
-    .sort((a, b) => a.index - b.index);
+        }))
+      )
+      .sort((a, b) => a.index - b.index);
+  }, [chunks]);
+
+  // Scroll to and auto-clear the selected cue. Keyed only on the selection so
+  // parent re-renders (every poll tick) never re-trigger the highlight.
+  useEffect(() => {
+    if (selectedCueIndex === null) return;
+
+    const element = rowRefs.current[selectedCueIndex];
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    const timer = setTimeout(onClearSelectedCue, HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [selectedCueIndex, onClearSelectedCue]);
+
+  const setRowRef = useCallback(
+    (index: number) => (el: HTMLTableRowElement | null) => {
+      rowRefs.current[index] = el;
+    },
+    []
+  );
 
   if (allCues.length === 0) return null;
 
@@ -78,22 +107,27 @@ export default function SubtitlePreview({
           </thead>
           <tbody className="divide-y divide-white/5 text-slate-300">
             {allCues.map((cue) => {
-              const cueIssues = validationIssues.filter((i) => i.cueIndex === cue.index);
+              const cueIssues = issuesByCue.get(cue.index) ?? [];
               const hasErrors = cueIssues.some((i) => i.severity === 'error');
               const hasWarnings = cueIssues.some((i) => i.severity === 'warning');
+              const isSelected = selectedCueIndex === cue.index;
 
-              let rowClass = 'hover:bg-white/5 transition-all';
-              if (hasErrors) rowClass = 'bg-rose-950/10 hover:bg-rose-950/20 border-l-2 border-l-rose-500';
-              else if (hasWarnings) rowClass = 'bg-amber-950/10 hover:bg-amber-950/20 border-l-2 border-l-amber-500';
+              let rowClass = 'transition-all';
+              if (isSelected) {
+                rowClass = 'bg-purple-500/20 transition-all';
+              } else if (hasErrors) {
+                rowClass = 'bg-rose-950/10 hover:bg-rose-950/20 border-l-2 border-l-rose-500';
+              } else if (hasWarnings) {
+                rowClass = 'bg-amber-950/10 hover:bg-amber-950/20 border-l-2 border-l-amber-500';
+              } else {
+                rowClass = 'hover:bg-white/5 transition-all';
+              }
+
+              const hasTranslation =
+                Array.isArray(cue.translatedLines) && cue.translatedLines.length > 0;
 
               return (
-                <tr
-                  key={cue.index}
-                  ref={(el) => {
-                    rowRefs.current[cue.index] = el;
-                  }}
-                  className={rowClass}
-                >
+                <tr key={cue.index} ref={setRowRef(cue.index)} className={rowClass}>
                   <td className="py-3 px-4 font-mono align-top text-purple-400 font-semibold">
                     {cue.index}
                   </td>
@@ -111,8 +145,8 @@ export default function SubtitlePreview({
                     {cue.textLines.join('\n')}
                   </td>
                   <td className="py-3 px-4 align-top leading-relaxed whitespace-pre-line">
-                    {cue.translatedLines ? (
-                      <span className="text-purple-100">{cue.translatedLines.join('\n')}</span>
+                    {hasTranslation ? (
+                      <span className="text-purple-100">{cue.translatedLines!.join('\n')}</span>
                     ) : cue.chunkStatus === 'processing' ? (
                       <span className="text-purple-400/60 italic shimmer px-2 py-0.5 rounded">
                         Translating...

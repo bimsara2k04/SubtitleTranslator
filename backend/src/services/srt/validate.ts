@@ -4,7 +4,6 @@ import type {
   ValidationResult,
   ValidationIssue,
 } from '../../types/subtitles.js';
-import { TIMESTAMP_REGEX, TIMESTAMP_LINE_REGEX, timestampToMs } from './timestamps.js';
 
 /** Characters per second reading comfort threshold */
 const MAX_CPS = 25;
@@ -62,25 +61,7 @@ export function validateSource(cues: SubtitleCue[]): ValidationResult {
       }
     }
 
-    // Timestamp format validation
-    if (!TIMESTAMP_REGEX.test(cue.startTime)) {
-      errors.push({
-        severity: 'error',
-        cueIndex: cue.index,
-        code: 'INVALID_START_TIMESTAMP',
-        message: `Invalid start timestamp "${cue.startTime}" on cue ${cue.index}.`,
-      });
-    }
-    if (!TIMESTAMP_REGEX.test(cue.endTime)) {
-      errors.push({
-        severity: 'error',
-        cueIndex: cue.index,
-        code: 'INVALID_END_TIMESTAMP',
-        message: `Invalid end timestamp "${cue.endTime}" on cue ${cue.index}.`,
-      });
-    }
-
-    // Start < end check
+    // Start < end check (timestamps themselves are validated by parseSRT)
     if (cue.durationMs < 0) {
       errors.push({
         severity: 'error',
@@ -128,12 +109,16 @@ export function validateTranslations(
   const warnings: ValidationIssue[] = [];
 
   const requestedIndexes = new Set(requestedCues.map((c) => c.index));
-  const returnedIndexes = new Set(translatedItems.map((t) => t.index));
+  const requestedByIndex = new Map(requestedCues.map((c) => [c.index, c]));
+  const returnedIndexCounts = new Map<number, number>();
+  for (const item of translatedItems) {
+    returnedIndexCounts.set(item.index, (returnedIndexCounts.get(item.index) ?? 0) + 1);
+  }
 
   // Every requested cue must have a translation
   // NOTE: treated as a warning (not fatal error) — we fall back to source text
   for (const cue of requestedCues) {
-    if (!returnedIndexes.has(cue.index)) {
+    if (!returnedIndexCounts.has(cue.index)) {
       warnings.push({
         severity: 'warning',
         cueIndex: cue.index,
@@ -155,7 +140,7 @@ export function validateTranslations(
     }
 
     // Duplicate index in response
-    const count = translatedItems.filter((t) => t.index === item.index).length;
+    const count = returnedIndexCounts.get(item.index) ?? 0;
     if (count > 1) {
       errors.push({
         severity: 'error',
@@ -168,7 +153,7 @@ export function validateTranslations(
 
   // Semantic checks per translated cue
   for (const item of translatedItems) {
-    const sourceCue = requestedCues.find((c) => c.index === item.index);
+    const sourceCue = requestedByIndex.get(item.index);
     if (!sourceCue) continue;
 
     // Empty translation — treated as warning, caller will patch with source fallback

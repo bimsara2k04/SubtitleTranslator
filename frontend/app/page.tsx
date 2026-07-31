@@ -1,10 +1,12 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useDropzone } from 'react-dropzone';
-import { uploadSRT } from '@/lib/api';
-import { Upload, FileText, Globe, Cpu, Languages, Sparkles, BookOpen, AlertCircle } from 'lucide-react';
+import { uploadSRT, getQuotaStatus, type QuotaStatusResult } from '@/lib/api';
+import { Upload, FileText, Globe, Cpu, Languages, Sparkles, BookOpen, AlertCircle, KeyRound, RefreshCw } from 'lucide-react';
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5MB — matches backend limit
 
 const TARGET_LANGUAGES = [
   { code: 'Spanish', name: 'Spanish (Español)' },
@@ -25,10 +27,9 @@ const TARGET_LANGUAGES = [
 ];
 
 const MODELS = [
-  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (Recommended)', speed: 'Fastest', quality: 'Highest' },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite (Budget)', speed: 'Fastest', quality: 'High' },
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', speed: 'Fast', quality: 'High' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Best Quality)', speed: 'Moderate', quality: 'Highest' },
+  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (Recommended & Best Quality)', speed: 'Fastest', quality: 'Highest' },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash-Lite (Budget)', speed: 'Fastest', quality: 'High' },
+  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (Often Busy)', speed: 'Fastest', quality: 'Highest' },
 ];
 
 const TONES = [
@@ -41,22 +42,69 @@ const TONES = [
 export default function UploadPage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
-  const [targetLanguage, setTargetLanguage] = useState('Spanish');
-  const [model, setModel] = useState('gemini-3.5-flash');
+  const [targetLanguage, setTargetLanguage] = useState('Sinhala');
+  const [model, setModel] = useState('gemini-3.6-flash');
   const [toneStyle, setToneStyle] = useState('natural');
   const [glossary, setGlossary] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [quota, setQuota] = useState<QuotaStatusResult | null>(null);
+  const [quotaLoading, setQuotaLoading] = useState(true);
+
+  const fetchQuota = useCallback(async () => {
+    const result = await getQuotaStatus();
+    if (result.ok) {
+      // Compute per-key exhaustion state at fetch time (not during render).
+      const now = Date.now();
+      setQuota({
+        ...result,
+        keys: result.keys.map((k) => ({
+          ...k,
+          exhausted: !!(
+            k.onCooldown &&
+            k.cooldownExpiresAt &&
+            new Date(k.cooldownExpiresAt).getTime() - now > 10 * 60 * 1000
+          ),
+        })),
+      });
+    } else {
+      setQuota(result);
+    }
+    setQuotaLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const first = setTimeout(() => void fetchQuota(), 0);
+    const interval = setInterval(() => void fetchQuota(), 30000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(interval);
+    };
+  }, [fetchQuota]);
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    accept: { 'application/x-subrip': ['.srt'], 'text/plain': ['.srt'] },
+    accept: {
+      'application/x-subrip': ['.srt'],
+      'text/plain': ['.srt'],
+      'application/octet-stream': ['.srt'],
+    },
     maxFiles: 1,
+    maxSize: MAX_UPLOAD_BYTES,
     onDrop: (acceptedFiles) => {
       setError(null);
       const accepted = acceptedFiles[0];
       if (accepted) {
         setFile(accepted);
+      }
+    },
+    onDropRejected: (fileRejections) => {
+      const first = fileRejections[0];
+      if (first?.errors.some((e) => e.code === 'file-too-large')) {
+        setError('File is too large. The maximum allowed size is 5MB.');
+      } else {
+        setError('File rejected. Please choose a single .srt subtitle file.');
       }
     },
   });
@@ -82,8 +130,12 @@ export default function UploadPage() {
 
       // Redirect to the job status page
       router.push(`/jobs/${response.jobId}`);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to initialize translation job. Make sure the backend server is running.');
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Failed to initialize translation job. Make sure the backend server is running.'
+      );
       setLoading(false);
     }
   };
@@ -269,6 +321,70 @@ export default function UploadPage() {
               </button>
             </form>
           </div>
+        </div>
+
+        {/* Quota Status Panel */}
+        <div className="w-full max-w-2xl mt-4 bg-white/3 border border-white/8 rounded-2xl p-5 backdrop-blur-xl">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+              <KeyRound className="h-3.5 w-3.5 text-purple-400" />
+              <span>API Key Pool — Daily Quota</span>
+            </div>
+            <button
+              onClick={fetchQuota}
+              className="text-slate-500 hover:text-slate-300 transition-colors"
+              title="Refresh quota status"
+            >
+              <RefreshCw className={`h-3 w-3 ${quotaLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {quotaLoading && !quota ? (
+            <p className="text-[10px] text-slate-500 text-center py-2">Loading quota status...</p>
+          ) : !quota?.ok ? (
+            <p className="text-[10px] text-amber-400/80 text-center py-2">
+              {quota?.reason === 'offline'
+                ? 'Backend offline — start the backend server to see key quota.'
+                : quota?.message ?? 'Could not load quota status.'}
+            </p>
+          ) : quota.keys.length === 0 ? (
+            <p className="text-[10px] text-amber-400/80 text-center py-2">
+              No Gemini API keys configured on the backend.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {quota.keys.map((k) => {
+                const pct = Math.round((k.dailyCallsUsed / Math.max(k.dailyCallsLimit, 1)) * 100);
+                const exhausted = k.exhausted ?? false;
+                const statusColor = exhausted ? 'bg-rose-500' : k.onCooldown ? 'bg-amber-500' : 'bg-emerald-500';
+                const barColor = exhausted ? 'bg-rose-500/60' : k.onCooldown ? 'bg-amber-500/60' : 'bg-purple-500/70';
+                return (
+                  <div key={k.label} className="flex items-center gap-3">
+                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusColor}`} />
+                    <span className="text-[10px] text-slate-400 w-16 shrink-0">{k.label}</span>
+                    <div className="flex-1 bg-white/5 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                        style={{ width: `${Math.min(pct, 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] tabular-nums shrink-0 text-slate-400">
+                      {k.dailyCallsUsed}/{k.dailyCallsLimit}
+                    </span>
+                    <span className={`text-[9px] shrink-0 font-medium ${
+                      exhausted ? 'text-rose-400' : k.onCooldown ? 'text-amber-400' : 'text-emerald-400'
+                    }`}>
+                      {exhausted ? 'Exhausted' : k.onCooldown ? 'Cooling' : `${k.dailyCallsRemaining} left`}
+                    </span>
+                  </div>
+                );
+              })}
+              <p className="text-[9px] text-slate-500 mt-1 text-right">
+                {quota.remainingToday} requests left across {quota.keyCount} keys
+                &nbsp;·&nbsp; Resets midnight PT &nbsp;·&nbsp; Auto-refreshes every 30s
+              </p>
+            </div>
+          )}
         </div>
       </main>
 

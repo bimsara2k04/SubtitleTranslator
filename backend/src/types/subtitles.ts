@@ -28,6 +28,8 @@ export type ParsedSRT = {
   totalCues: number;
   /** Raw source text — preserved for debugging */
   rawText: string;
+  /** Malformed blocks that could not be parsed into cues */
+  parseErrors: ValidationIssue[];
 };
 
 export type ValidationSeverity = 'error' | 'warning';

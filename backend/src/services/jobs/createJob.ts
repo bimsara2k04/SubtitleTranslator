@@ -4,18 +4,28 @@ import { parseSRT } from '../srt/parse.js';
 import { validateSource } from '../srt/validate.js';
 import { chunkCues } from '../../utils/chunking.js';
 import type { CreateJobRequest, TranslationJob } from '../../types/jobs.js';
+import type { ValidationIssue } from '../../types/subtitles.js';
 
 export type CreateJobResult = {
   job: TranslationJob;
   valid: boolean;
+  /** Parse + validation issues discovered before translation. */
+  preIssues: ValidationIssue[];
 };
 
 export async function createJob(req: CreateJobRequest): Promise<CreateJobResult> {
   // 1. Parse raw SRT text into structured cues
-  const { cues, totalCues } = parseSRT(req.srtContent);
+  const { cues, totalCues, parseErrors } = parseSRT(req.srtContent);
 
-  // 2. Validate the source SRT
+  // 2. Validate the source SRT. Parsing errors are structural — a file with
+  //    malformed blocks must not pass as fully valid with silently dropped cues.
   const validation = validateSource(cues);
+  const preIssues = [
+    ...parseErrors,
+    ...validation.errors,
+    ...validation.warnings,
+  ];
+  const valid = parseErrors.length === 0 && validation.valid;
 
   // 3. Estimate chunks
   // Chunk size of 500 cues keeps a 1,800-cue movie file within 4 API requests,
@@ -29,7 +39,7 @@ export async function createJob(req: CreateJobRequest): Promise<CreateJobResult>
 
   // 4. Create the DB record for the job
   const job = await JobsRepository.create({
-    status: validation.valid ? 'pending' : 'failed',
+    status: valid ? 'pending' : 'failed',
     sourceFilename: req.filename,
     targetLanguage: req.targetLanguage,
     model: req.model,
@@ -39,26 +49,22 @@ export async function createJob(req: CreateJobRequest): Promise<CreateJobResult>
     totalChunks: chunkedCues.length,
     processedChunks: 0,
     failedChunks: 0,
-    errorMessage: validation.valid ? null : 'Pre-translation validation failed.',
+    errorMessage: valid ? null : 'Pre-translation validation failed.',
   });
 
   // 5. Store pre-validation report
-  const preIssues = [...validation.errors, ...validation.warnings];
   if (preIssues.length > 0) {
     await JobsRepository.addValidationReport(job.id, null, 'pre', preIssues);
   }
 
   // If the file was not structurally valid, don't create chunks to translate
-  if (!validation.valid) {
-    return { job, valid: false };
+  if (!valid) {
+    return { job, valid: false, preIssues };
   }
 
-  // 6. Create chunk records in the database
-  for (let i = 0; i < chunkedCues.length; i++) {
-    const chunkCuesList = chunkedCues[i];
-    if (!chunkCuesList) continue;
-
-    await ChunksRepository.create({
+  // 6. Create chunk records in the database (single bulk insert)
+  await ChunksRepository.createMany(
+    chunkedCues.map((chunkCuesList, i) => ({
       jobId: job.id,
       chunkIndex: i,
       status: 'pending',
@@ -69,8 +75,8 @@ export async function createJob(req: CreateJobRequest): Promise<CreateJobResult>
       errorMessage: null,
       startedAt: null,
       completedAt: null,
-    });
-  }
+    }))
+  );
 
-  return { job, valid: true };
+  return { job, valid: true, preIssues };
 }

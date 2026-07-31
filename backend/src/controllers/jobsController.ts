@@ -1,8 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import { JobsRepository } from '../db/repositories/jobs.js';
 import { ChunksRepository } from '../db/repositories/chunks.js';
-import { processChunk } from '../services/jobs/processChunk.js';
-import { rebuildOutput } from '../services/jobs/rebuildOutput.js';
+import { runBackgroundJob } from '../services/jobs/runJob.js';
+import { isValidUuid } from '../utils/validate.js';
 
 export async function handleGetJob(
   req: Request,
@@ -11,8 +11,8 @@ export async function handleGetJob(
 ): Promise<void> {
   try {
     const id = req.params.id as string;
-    if (!id) {
-      res.status(400).json({ error: { message: 'Missing job id' } });
+    if (!isValidUuid(id)) {
+      res.status(400).json({ error: { code: 'INVALID_ID', message: 'Invalid job id.' } });
       return;
     }
 
@@ -48,64 +48,6 @@ export async function handleGetJob(
   }
 }
 
-/**
- * Sequential background worker to translate all pending/failed chunks of a job
- */
-async function runBackgroundJob(jobId: string): Promise<void> {
-  try {
-    // 1. Set job status to translating
-    await JobsRepository.updateStatus(jobId, 'translating');
-
-    // 3. Process each chunk that is pending or failed dynamically.
-    // We re-query the database to handle chunk splits created during translation failures.
-    const attemptedChunkIds = new Set<string>();
-    while (true) {
-      const currentChunks = await ChunksRepository.findByJobId(jobId);
-      // Find the next chunk that needs processing. Skip any that failed in this run to prevent infinite loops.
-      const nextChunk = currentChunks.find(
-        (c) => (c.status === 'pending' || c.status === 'failed') && !attemptedChunkIds.has(c.id)
-      );
-      if (!nextChunk) {
-        break;
-      }
-
-      attemptedChunkIds.add(nextChunk.id);
-      try {
-        await processChunk(nextChunk.id);
-      } catch (err: any) {
-        const msg = err?.message || String(err);
-        // Daily quota exhaustion is unrecoverable for the rest of today —
-        // abort the entire job immediately instead of continuing to hammer the API.
-        if (msg.includes('daily free-tier quota exhausted') || msg.includes('PerDayPerProjectPerModel-FreeTier')) {
-          throw err;
-        }
-        // For splits or transient chunk failures, just log and continue to the next chunk
-        console.warn(`[BackgroundJob] Chunk ${nextChunk.id} failed or was split:`, msg);
-      }
-    }
-
-    // 4. Check status of chunks to see if we can rebuild
-    const updatedChunks = await ChunksRepository.findByJobId(jobId);
-    const allCompleted = updatedChunks.every((c) => c.status === 'completed');
-
-    if (allCompleted) {
-      await JobsRepository.updateStatus(jobId, 'rebuilding');
-      await rebuildOutput(jobId);
-      await JobsRepository.updateStatus(jobId, 'completed');
-    } else {
-      // Some chunks failed, set job to failed so user can see and retry specific chunks
-      await JobsRepository.updateStatus(jobId, 'failed', {
-        errorMessage: 'Some subtitle chunks failed to translate.',
-      });
-    }
-  } catch (error: any) {
-    console.error(`[BackgroundJob Error] Job ${jobId} failed:`, error);
-    await JobsRepository.updateStatus(jobId, 'failed', {
-      errorMessage: error?.message || 'Unexpected background error',
-    });
-  }
-}
-
 export async function handleStartTranslation(
   req: Request,
   res: Response,
@@ -113,8 +55,8 @@ export async function handleStartTranslation(
 ): Promise<void> {
   try {
     const id = req.params.id as string;
-    if (!id) {
-      res.status(400).json({ error: { message: 'Missing job id' } });
+    if (!isValidUuid(id)) {
+      res.status(400).json({ error: { code: 'INVALID_ID', message: 'Invalid job id.' } });
       return;
     }
 
@@ -124,13 +66,15 @@ export async function handleStartTranslation(
       return;
     }
 
-    if (job.status === 'translating') {
-      res.status(400).json({ error: { message: 'Job is already translating.' } });
+    // Atomically claim the job. A second concurrent call loses the claim.
+    const claimed = await JobsRepository.claimForTranslation(id);
+    if (!claimed) {
+      res.status(409).json({ error: { message: 'Job is already being processed.' } });
       return;
     }
 
     // Run background worker asynchronously
-    runBackgroundJob(id);
+    void runBackgroundJob(id);
 
     res.status(202).json({
       message: 'Translation started in background.',
@@ -149,8 +93,8 @@ export async function handleRetryChunk(
   try {
     const id = req.params.id as string;
     const chunkId = req.params.chunkId as string;
-    if (!id || !chunkId) {
-      res.status(400).json({ error: { message: 'Missing job id or chunk id' } });
+    if (!isValidUuid(id) || !isValidUuid(chunkId)) {
+      res.status(400).json({ error: { code: 'INVALID_ID', message: 'Invalid job or chunk id.' } });
       return;
     }
 
@@ -166,36 +110,41 @@ export async function handleRetryChunk(
       return;
     }
 
-    // We can retry this single chunk synchronously or start it in background.
-    // Retrying immediately is nice because it is simple.
+    // The background worker retries failed chunks on its own while running.
+    // Refuse to spawn a second worker mid-run to avoid duplicate Gemini calls.
+    if (job.status === 'translating' || job.status === 'rebuilding') {
+      res.status(409).json({
+        error: { message: 'Job is still being processed. Wait for it to finish before retrying chunks.' },
+      });
+      return;
+    }
+
+    if (chunk.status === 'completed') {
+      res.status(400).json({ error: { message: 'This chunk already translated successfully.' } });
+      return;
+    }
+
+    if (chunk.status === 'processing') {
+      res.status(409).json({ error: { message: 'This chunk is currently being translated.' } });
+      return;
+    }
+
+    // Reset the chunk so the worker picks it up, then claim + start the worker.
+    await ChunksRepository.updateStatus(chunkId, 'pending', {
+      errorMessage: null,
+      completedAt: null,
+    });
+
+    const claimed = await JobsRepository.claimForTranslation(id);
+    if (!claimed) {
+      // Another worker won the race — it will pick up the pending chunk itself.
+      res.status(202).json({ message: 'Chunk retry queued for the active worker.' });
+      return;
+    }
+
+    void runBackgroundJob(id);
+
     res.status(202).json({ message: 'Chunk retry started.' });
-
-    // Background process the single chunk
-    (async () => {
-      try {
-        // Reset job status to translating if it was failed/completed
-        await JobsRepository.updateStatus(id, 'translating');
-
-        // Process chunk
-        await processChunk(chunkId);
-
-        // Check if all chunks are now completed
-        const chunks = await ChunksRepository.findByJobId(id);
-        const allCompleted = chunks.every((c) => c.status === 'completed');
-
-        if (allCompleted) {
-          await JobsRepository.updateStatus(id, 'rebuilding');
-          await rebuildOutput(id);
-          await JobsRepository.updateStatus(id, 'completed');
-        } else if (chunks.every((c) => c.status !== 'processing' && c.status !== 'pending')) {
-          await JobsRepository.updateStatus(id, 'failed', {
-            errorMessage: 'Some subtitle chunks are still in a failed state.',
-          });
-        }
-      } catch (err) {
-        console.error(`[RetryChunk BG Error] Failed retrying chunk ${chunkId}:`, err);
-      }
-    })();
   } catch (error) {
     next(error);
   }

@@ -35,8 +35,9 @@ export async function rebuildOutput(jobId: string): Promise<ExportRecord> {
   const finalSRTContent = formatSRT(originalCues, translationMap);
 
   // 4. Determine export filename
-  const cleanName = job.sourceFilename.replace(/\.srt$/i, '');
-  const exportFilename = `${cleanName}_translated_${job.targetLanguage.substring(0, 5).toLowerCase()}.srt`;
+  const cleanName = job.sourceFilename.replace(/\.srt$/i, '') || 'subtitle';
+  const languageTag = job.targetLanguage.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 20) || 'translated';
+  const exportFilename = `${cleanName}_translated_${languageTag}.srt`;
 
   // 5. Store export record
   const record = await ExportsRepository.create({

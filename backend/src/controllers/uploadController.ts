@@ -2,6 +2,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { createJob } from '../services/jobs/createJob.js';
 import { JobsRepository } from '../db/repositories/jobs.js';
 import { looksLikeSRT } from '../services/srt/parse.js';
+import { parseUploadBody } from '../services/jobs/schemas.js';
+
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB (matches Multer limit)
 
 export async function handleUpload(
   req: Request,
@@ -15,9 +18,24 @@ export async function handleUpload(
       return;
     }
 
-    const { targetLanguage, model, toneStyle, glossary } = req.body;
-    if (!targetLanguage) {
-      res.status(400).json({ error: { code: 'MISSING_PARAM', message: 'targetLanguage is required.' } });
+    const parsed = parseUploadBody({
+      targetLanguage: req.body?.targetLanguage,
+      model: req.body?.model,
+      toneStyle: req.body?.toneStyle,
+      glossary: req.body?.glossary,
+      filename: file.originalname,
+    });
+
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message || 'Invalid upload parameters.';
+      res.status(400).json({ error: { code: 'INVALID_PARAMS', message } });
+      return;
+    }
+
+    const { targetLanguage, model, toneStyle, glossary, filename } = parsed.data;
+
+    if (file.size > MAX_FILE_SIZE) {
+      res.status(413).json({ error: { code: 'FILE_TOO_LARGE', message: 'File exceeds the 5MB limit.' } });
       return;
     }
 
@@ -34,11 +52,11 @@ export async function handleUpload(
 
     // Create the job
     const result = await createJob({
-      filename: file.originalname,
+      filename,
       targetLanguage,
-      model: model || 'gemini-2.0-flash',
-      toneStyle: toneStyle || 'natural',
-      glossary: glossary || '',
+      model,
+      toneStyle,
+      glossary,
       srtContent,
     });
 

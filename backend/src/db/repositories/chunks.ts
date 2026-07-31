@@ -1,8 +1,14 @@
-import { eq, and, gt, sql } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../client.js';
 import { translationChunks, translationJobs } from '../schema.js';
 import type { TranslationChunk, ChunkStatus } from '../../types/jobs.js';
-import type { TranslationItem } from '../../types/subtitles.js';
+import type { SubtitleCue, TranslationItem } from '../../types/subtitles.js';
+
+export type ClaimResult = {
+  chunk: TranslationChunk;
+  /** True when the chunk was previously failed and had already been counted in job metrics. */
+  wasFailed: boolean;
+};
 
 export class ChunksRepository {
   static async create(chunk: Omit<TranslationChunk, 'id'>): Promise<TranslationChunk> {
@@ -27,6 +33,13 @@ export class ChunksRepository {
     }
 
     return inserted;
+  }
+
+  static async createMany(
+    chunks: Omit<TranslationChunk, 'id'>[]
+  ): Promise<TranslationChunk[]> {
+    if (chunks.length === 0) return [];
+    return db.insert(translationChunks).values(chunks).returning();
   }
 
   static async findById(id: string): Promise<TranslationChunk | null> {
@@ -67,6 +80,121 @@ export class ChunksRepository {
     return updated;
   }
 
+  /**
+   * Atomically claim a chunk for translation.
+   *
+   * Only chunks in `pending` or `failed` can be claimed. When a previously
+   * failed chunk is claimed, its already-counted outcome is reverted from the
+   * job metrics so retries never double-count.
+   *
+   * Returns `null` if the chunk cannot be claimed (already processing or
+   * completed) — callers should treat this as an idempotent no-op.
+   */
+  static async claimForProcessing(id: string): Promise<ClaimResult | null> {
+    return db.transaction(async (tx) => {
+      const [chunk] = await tx
+        .select()
+        .from(translationChunks)
+        .where(eq(translationChunks.id, id))
+        .for('update');
+
+      if (!chunk) return null;
+      if (chunk.status !== 'pending' && chunk.status !== 'failed') return null;
+
+      const wasFailed = chunk.status === 'failed';
+
+      await tx
+        .update(translationChunks)
+        .set({ status: 'processing', startedAt: new Date() })
+        .where(eq(translationChunks.id, id));
+
+      if (wasFailed) {
+        await tx
+          .update(translationJobs)
+          .set({
+            processedChunks: sql`greatest(${translationJobs.processedChunks} - 1, 0)`,
+            failedChunks: sql`greatest(${translationJobs.failedChunks} - 1, 0)`,
+            updatedAt: new Date(),
+          })
+          .where(eq(translationJobs.id, chunk.jobId));
+      }
+
+      return { chunk, wasFailed };
+    });
+  }
+
+  /**
+   * Atomically record a successful translation. Guards on the chunk still being
+   * `processing` so a stale/double call never double-counts the outcome.
+   */
+  static async markCompleted(
+    id: string,
+    jobId: string,
+    translatedItems: TranslationItem[]
+  ): Promise<TranslationChunk | null> {
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(translationChunks)
+        .set({
+          status: 'completed',
+          translatedItems,
+          errorMessage: null,
+          completedAt: new Date(),
+        })
+        .where(and(eq(translationChunks.id, id), eq(translationChunks.status, 'processing')))
+        .returning();
+
+      if (!updated) return null;
+
+      await tx
+        .update(translationJobs)
+        .set({
+          processedChunks: sql`${translationJobs.processedChunks} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(translationJobs.id, jobId));
+
+      return updated;
+    });
+  }
+
+  /**
+   * Atomically record a failed translation. Guards on the chunk still being
+   * `processing` so a stale/double call never double-counts the outcome.
+   */
+  static async markFailed(
+    id: string,
+    jobId: string,
+    errorMessage: string,
+    retryCount: number
+  ): Promise<TranslationChunk | null> {
+    return db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(translationChunks)
+        .set({
+          status: 'failed',
+          errorMessage,
+          retryCount,
+          completedAt: new Date(),
+        })
+        .where(and(eq(translationChunks.id, id), eq(translationChunks.status, 'processing')))
+        .returning();
+
+      if (!updated) return null;
+
+      await tx
+        .update(translationJobs)
+        .set({
+          processedChunks: sql`${translationJobs.processedChunks} + 1`,
+          failedChunks: sql`${translationJobs.failedChunks} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(translationJobs.id, jobId));
+
+      return updated;
+    });
+  }
+
   static async updateSuccess(
     id: string,
     translatedItems: TranslationItem[]
@@ -92,8 +220,8 @@ export class ChunksRepository {
 
   static async splitChunk(
     chunkId: string,
-    cuesA: any[],
-    cuesB: any[]
+    cuesA: SubtitleCue[],
+    cuesB: SubtitleCue[]
   ): Promise<void> {
     const chunk = await this.findById(chunkId);
     if (!chunk) {
@@ -118,11 +246,12 @@ export class ChunksRepository {
         .where(
           and(
             eq(translationChunks.jobId, chunk.jobId),
-            gt(translationChunks.chunkIndex, chunk.chunkIndex)
+            sql`${translationChunks.chunkIndex} > ${chunk.chunkIndex}`
           )
         );
 
-      // 2. Delete original failed chunk
+      // 2. Delete original chunk (claimed chunks are not counted in metrics,
+      //    so only totalChunks needs to increase)
       await tx.delete(translationChunks).where(eq(translationChunks.id, chunkId));
 
       // 3. Insert new chunk A (same index)
@@ -147,16 +276,11 @@ export class ChunksRepository {
         errorMessage: null,
       });
 
-      // 5. Update job metrics:
-      // totalChunks increases by 1
-      // processedChunks reduces by 1 (since the failed chunk was deleted and replaced with pending ones)
-      // failedChunks reduces by 1 (since the failure was replaced with two pending chunks)
+      // 5. Update job metrics: only totalChunks grows (+1 for the split)
       await tx
         .update(translationJobs)
         .set({
-          totalChunks: job.totalChunks + 1,
-          processedChunks: Math.max(0, job.processedChunks - 1),
-          failedChunks: Math.max(0, job.failedChunks - 1),
+          totalChunks: sql`${translationJobs.totalChunks} + 1`,
           status: 'translating',
           updatedAt: new Date(),
         })

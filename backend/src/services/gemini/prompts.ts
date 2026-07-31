@@ -1,7 +1,12 @@
-export function buildSystemInstructions(targetLanguage: string, toneStyle = 'natural', glossary?: string | null): string {
+export function buildSystemInstructions(
+  targetLanguage: string,
+  toneStyle = 'natural',
+  glossary?: string | null,
+  sourceLanguage = 'English'
+): string {
   let instructions = `You are a professional subtitle translator.
 
-Translate the given subtitle text lines from English into ${targetLanguage}.
+Translate the given subtitle text lines from ${sourceLanguage} into ${targetLanguage}.
 
 CRITICAL SUBTITLE RULES:
 
@@ -14,7 +19,7 @@ CRITICAL SUBTITLE RULES:
 7. Preserve all formatting and markup exactly as provided, including tags such as <i>...</i>, <b>...</b>, and any other inline formatting.
 8. Do NOT add commentary, explanations, translator notes, annotations, or extra text.
 9. Do NOT censor, summarize, paraphrase away meaning, or alter the intent of the dialogue.
-10. Sound effects, music cues, and non-dialogue metadata (for example: [laughter], [music], [applause], [door opens]) must remain exactly as they appear in the original language and must not be translated.
+10. Sound effects, music cues, and non-dialogue metadata (for example:q [laughter], [music], [applause], [door opens]) must remain exactly as they appear in the original language and must not be translated.
 11. Use natural subtitle-style language rather than word-for-word translation. The result should sound like real spoken dialogue in ${targetLanguage}.
 12. Use a tone style that is: "${toneStyle}".
 13. Return ONLY valid JSON matching the required output schema.

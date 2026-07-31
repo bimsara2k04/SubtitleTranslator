@@ -1,29 +1,38 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, use } from 'react';
+import React, { useState, useEffect, useCallback, useRef, use } from 'react';
 import Link from 'next/link';
-import { getJobDetails, startTranslation, retryChunk, getExportUrl } from '@/lib/api';
-import type { JobDetails } from '@/lib/types';
+import { getJobDetails, startTranslation, retryChunk, downloadExport } from '@/lib/api';
+import type { JobDetails, JobStatus } from '@/lib/types';
 import ChunkGrid from './components/ChunkGrid';
 import ValidationReport from './components/ValidationReport';
 import SubtitlePreview from './components/SubtitlePreview';
 import {
-  Sparkles,
   ArrowLeft,
   Download,
   AlertTriangle,
-  Play,
-  CheckCircle,
   FileText,
   Clock,
   Loader2,
-  ListRestart,
   RefreshCw,
 } from 'lucide-react';
 
 type PageProps = {
   params: Promise<{ id: string }>;
 };
+
+const ACTIVE_STATUSES: JobStatus[] = ['pending', 'parsing', 'translating', 'rebuilding'];
+
+function formatTime(iso: string | undefined | null): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return '—';
+  return date.toLocaleTimeString();
+}
+
+function getErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
 
 export default function JobStatusPage({ params }: PageProps) {
   // Resolve params promise
@@ -33,83 +42,168 @@ export default function JobStatusPage({ params }: PageProps) {
   const [job, setJob] = useState<JobDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [restarting, setRestarting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [selectedCueIndex, setSelectedCueIndex] = useState<number | null>(null);
+
+  // Latest job for closures that must read fresh state.
+  const jobRef = useRef<JobDetails | null>(null);
+  const updateJob = useCallback((next: JobDetails | null) => {
+    jobRef.current = next;
+    setJob(next);
+  }, []);
 
   // Fetch job details
   const fetchJob = useCallback(async () => {
     try {
       const data = await getJobDetails(jobId);
-      setJob(data);
+      updateJob(data);
       setError(null);
-    } catch (err: any) {
-      console.error('Error fetching job details:', err);
-      setError(err?.message || 'Failed to sync job details.');
+      return data;
+    } catch (err: unknown) {
+      const message = getErrorMessage(err, 'Failed to sync job details.');
+      setError(message);
+      if (!jobRef.current) {
+        console.error('Error fetching job details:', err);
+      }
+      return null;
     } finally {
       setLoading(false);
     }
-  }, [jobId]);
+  }, [jobId, updateJob]);
 
-  // Polling hook when job is in active translation state
+  // Poll while the job is active. Uses a self-scheduling setTimeout chain with
+  // an in-flight guard so requests never overlap, exponential backoff on
+  // repeated failures, and stops entirely once the job finishes.
   useEffect(() => {
-    fetchJob();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let consecutiveFailures = 0;
+    let inFlight = false;
 
-    const interval = setInterval(() => {
-      if (job) {
-        const isProcessing =
-          job.status === 'pending' ||
-          job.status === 'parsing' ||
-          job.status === 'translating' ||
-          job.status === 'rebuilding';
+    const schedule = () => {
+      if (cancelled) return;
+      const status = jobRef.current?.status;
+      if (status && !ACTIVE_STATUSES.includes(status)) return; // done — stop polling
 
-        if (isProcessing) {
-          fetchJob();
-        }
+      const backoff = Math.min(2 ** Math.min(consecutiveFailures, 4), 16); // 2s -> 32s max
+      const delay = 2000 * backoff;
+      timer = setTimeout(() => void poll(), delay);
+    };
+
+    const poll = async () => {
+      if (cancelled || document.hidden || inFlight) {
+        schedule();
+        return;
       }
-    }, 2000);
+      inFlight = true;
+      try {
+        const data = await getJobDetails(jobId);
+        if (cancelled) return;
+        consecutiveFailures = 0;
+        updateJob(data);
+        setError(null);
+      } catch (err: unknown) {
+        if (!cancelled) {
+          consecutiveFailures += 1;
+          setError(getErrorMessage(err, 'Failed to sync job details.'));
+        }
+      } finally {
+        inFlight = false;
+        setLoading(false);
+        schedule();
+      }
+    };
 
-    return () => clearInterval(interval);
-  }, [fetchJob, job?.status]);
+    void poll();
 
-  // Auto-start translation if the job is just loaded and pending
+    const onVisibility = () => {
+      if (!document.hidden && jobRef.current && ACTIVE_STATUSES.includes(jobRef.current.status)) {
+        if (timer) clearTimeout(timer);
+        void poll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+    // Re-arm polling whenever the job's status changes (e.g. a finished job is
+    // restarted and becomes "translating" again).
+  }, [jobId, updateJob, job?.status]);
+
+  // Auto-start translation if the job is just loaded and pending. Guarded with a
+  // ref so React StrictMode's double-invoked effects never fire twice.
+  const autoStartedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (job && job.status === 'pending') {
+    if (job?.status === 'pending' && autoStartedFor.current !== job.id) {
+      autoStartedFor.current = job.id;
       (async () => {
         try {
           await startTranslation(jobId);
-          fetchJob();
-        } catch (err: any) {
-          setError(err?.message || 'Failed to start subtitle translation.');
+          await fetchJob();
+        } catch (err: unknown) {
+          // 409 "already being processed" is expected after a fast double-pump.
+          setError(getErrorMessage(err, 'Failed to start subtitle translation.'));
+          await fetchJob();
         }
       })();
     }
-  }, [job?.status, jobId, fetchJob]);
+  }, [job?.status, job?.id, jobId, fetchJob]);
 
   const handleStartTranslate = async () => {
+    setRestarting(true);
+    setError(null);
     try {
-      setLoading(true);
       await startTranslation(jobId);
       await fetchJob();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to start translation run.');
-      setLoading(false);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Failed to start translation run.'));
+      await fetchJob();
+    } finally {
+      setRestarting(false);
     }
   };
 
   const handleRetryChunk = async (chunkId: string) => {
+    setError(null);
     try {
       await retryChunk(jobId, chunkId);
       await fetchJob();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to retry chunk.');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Failed to retry chunk.'));
+      await fetchJob();
     }
   };
 
-  const handleSelectCue = (cueIndex: number) => {
+  const handleSelectCue = useCallback((cueIndex: number) => {
     setSelectedCueIndex(cueIndex);
-  };
+  }, []);
 
-  const handleClearSelectedCue = () => {
+  const handleClearSelectedCue = useCallback(() => {
     setSelectedCueIndex(null);
+  }, []);
+
+  const handleDownload = async () => {
+    setExporting(true);
+    setError(null);
+    try {
+      const { blob, filename } = await downloadExport(jobId);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Failed to download export.'));
+    } finally {
+      setExporting(false);
+    }
   };
 
   if (loading && !job) {
@@ -128,13 +222,25 @@ export default function JobStatusPage({ params }: PageProps) {
           <AlertTriangle className="h-10 w-10 text-rose-400 mx-auto" />
           <h2 className="text-lg font-bold text-white mt-4">Job Workspace Error</h2>
           <p className="text-xs text-slate-400 mt-2 leading-relaxed">{error}</p>
-          <Link
-            href="/"
-            className="mt-6 inline-flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            <span>Return to upload page</span>
-          </Link>
+          <div className="mt-6 flex items-center justify-center gap-4">
+            <button
+              onClick={() => {
+                setLoading(true);
+                void fetchJob();
+              }}
+              className="inline-flex items-center gap-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg transition-colors cursor-pointer"
+            >
+              <RefreshCw className="h-4 w-4" />
+              <span>Retry</span>
+            </button>
+            <Link
+              href="/"
+              className="inline-flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span>Return to upload page</span>
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -147,8 +253,7 @@ export default function JobStatusPage({ params }: PageProps) {
 
   const isCompleted = job.status === 'completed';
   const isFailed = job.status === 'failed';
-  const isTranslating =
-    job.status === 'translating' || job.status === 'parsing' || job.status === 'rebuilding';
+  const isActive = ACTIVE_STATUSES.includes(job.status);
 
   return (
     <div className="flex flex-col min-h-screen relative overflow-hidden bg-[#030014]">
@@ -184,21 +289,31 @@ export default function JobStatusPage({ params }: PageProps) {
 
           <div className="flex items-center gap-2">
             {isCompleted && (
-              <a
-                href={getExportUrl(jobId)}
-                className="bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer shadow-[0_0_15px_rgba(139,92,246,0.3)] hover:shadow-[0_0_20px_rgba(139,92,246,0.5)] active:scale-95"
+              <button
+                onClick={handleDownload}
+                disabled={exporting}
+                className="bg-purple-600 hover:bg-purple-500 disabled:bg-purple-800 text-white font-semibold py-2 px-4 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer shadow-[0_0_15px_rgba(139,92,246,0.3)] hover:shadow-[0_0_20px_rgba(139,92,246,0.5)] active:scale-95"
               >
-                <Download className="h-4 w-4" />
-                <span>Export SRT</span>
-              </a>
+                {exporting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                <span>{exporting ? 'Preparing...' : 'Export SRT'}</span>
+              </button>
             )}
             {isFailed && (
               <button
                 onClick={handleStartTranslate}
-                className="bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer active:scale-95"
+                disabled={restarting}
+                className="bg-purple-600 hover:bg-purple-500 disabled:bg-purple-800 text-white font-semibold py-2 px-4 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer active:scale-95"
               >
-                <RefreshCw className="h-4 w-4" />
-                <span>Restart Translation</span>
+                {restarting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                <span>{restarting ? 'Restarting...' : 'Restart Translation'}</span>
               </button>
             )}
           </div>
@@ -207,6 +322,14 @@ export default function JobStatusPage({ params }: PageProps) {
 
       {/* Main Grid */}
       <main className="flex-grow max-w-5xl w-full mx-auto py-10 px-4 flex flex-col gap-6">
+        {/* Inline error banner (shown while a job is already loaded) */}
+        {error && job && (
+          <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl p-3 flex gap-3 items-start text-xs leading-normal">
+            <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
+
         {/* Status Card */}
         <div className="bg-white/5 border border-white/10 rounded-2xl p-6 backdrop-blur-xl relative overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -228,7 +351,7 @@ export default function JobStatusPage({ params }: PageProps) {
                 <div className="flex items-center gap-4 text-xs text-slate-400 mt-2">
                   <span className="flex items-center gap-1">
                     <Clock className="h-3.5 w-3.5" />
-                    Created {new Date(job.createdAt).toLocaleTimeString()}
+                    Created {formatTime(job.createdAt)}
                   </span>
                   <span>&bull;</span>
                   <span>
@@ -265,6 +388,12 @@ export default function JobStatusPage({ params }: PageProps) {
                 <span>{job.errorMessage}</span>
               </div>
             </div>
+          )}
+
+          {isActive && (
+            <p className="text-[10px] text-slate-500 mt-3 text-right">
+              Translating multiple chunks in parallel across API keys.
+            </p>
           )}
         </div>
 

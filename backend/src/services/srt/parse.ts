@@ -81,6 +81,7 @@ export function parseSRT(raw: string): ParsedSRT {
     cues,
     totalCues: cues.length,
     rawText: normalized,
+    parseErrors,
   };
 }
 

@@ -8,9 +8,10 @@
     "dev": "nodemon --watch src --ext ts --exec 'tsx src/index.ts'",
     "build": "tsc",
     "start": "node dist/index.js",
-    "db:generate": "drizzle-kit generate --config drizzle.config.json",
-    "db:push": "drizzle-kit push --config drizzle.config.json",
-    "db:migrate": "drizzle-kit migrate --config drizzle.config.json"
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "db:generate": "drizzle-kit generate --config drizzle.config.mjs",
+    "db:push": "drizzle-kit push --config drizzle.config.mjs",
+    "db:migrate": "drizzle-kit migrate --config drizzle.config.mjs"
   },
   "keywords": [],
   "author": "",

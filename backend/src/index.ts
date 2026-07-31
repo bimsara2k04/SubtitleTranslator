@@ -16,6 +16,9 @@ app.use(
   cors({
     origin: [frontendUrl],
     credentials: true,
+    // Expose Content-Disposition so the frontend can read the real export
+    // filename when downloading via fetch()/blob.
+    exposedHeaders: ['Content-Disposition'],
   })
 );
 
